@@ -1,0 +1,14 @@
+{
+  "name": "Fly Fishing",
+  "short_name": "FlyFish",
+  "description": "Western US rivers, live flow + weather, trip log with voice memos and fly references.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0b1416",
+  "theme_color": "#0b1416",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

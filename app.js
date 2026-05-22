@@ -1,0 +1,1787 @@
+/*
+ * Fly Fishing — single-file web app.
+ * Vanilla JS. No build step. Persists to IndexedDB.
+ * Live data from USGS Water Services and Open-Meteo (both free, no key).
+ */
+
+// ---------- constants ----------
+
+const CARD_GRADIENTS = [
+  ["#0d3d2a", "#226b48"],  // teal
+  ["#0d2240", "#1a4070"],  // blue
+  ["#2d1810", "#5c3520"],  // warm brown
+  ["#0d2d1a", "#1a5c36"],  // forest
+  ["#1a0d30", "#3a1a60"],  // purple
+  ["#2a1e08", "#56401a"],  // amber
+];
+
+// ---------- seed data ----------
+
+const SEED_RIVERS = [
+  // Colorado
+  { name: "South Platte River", state: "CO", section: "Cheesman Canyon", siteCode: "06701900", lat: 39.2272, lon: -105.2825 },
+  { name: "South Platte River", state: "CO", section: "Deckers",         siteCode: "06701900", lat: 39.2719, lon: -105.2167 },
+  { name: "Arkansas River",     state: "CO", section: "Buena Vista to Salida", siteCode: "07091200", lat: 38.5380, lon: -106.0028 },
+  { name: "Colorado River",     state: "CO", section: "Glenwood Canyon", siteCode: "09085000", lat: 39.5505, lon: -107.3242 },
+  { name: "Frying Pan River",   state: "CO", section: "Below Ruedi Dam", siteCode: "09080400", lat: 39.3678, lon: -106.8214 },
+  { name: "Roaring Fork River", state: "CO", section: "Aspen to Basalt", siteCode: "09073400", lat: 39.4006, lon: -107.0331 },
+  { name: "Gunnison River",     state: "CO", section: "Gunnison Gorge",  siteCode: "09128000", lat: 38.5447, lon: -107.7064 },
+  { name: "Eagle River",        state: "CO", section: "Avon to Wolcott", siteCode: "09067005", lat: 39.6464, lon: -106.7194 },
+  { name: "North Platte River", state: "CO", section: "Northgate Canyon", siteCode: "06614800", lat: 40.9636, lon: -106.3303 },
+  { name: "Blue River",         state: "CO", section: "Below Dillon Reservoir", siteCode: "09050700", lat: 39.6253, lon: -106.0731 },
+  // Montana
+  { name: "Madison River",      state: "MT", section: "Three Dollar Bridge", siteCode: "06041000", lat: 44.8181, lon: -111.5375 },
+  { name: "Yellowstone River",  state: "MT", section: "Yankee Jim Canyon",   siteCode: "06191500", lat: 45.1117, lon: -110.7794 },
+  { name: "Bighorn River",      state: "MT", section: "Below Afterbay",      siteCode: "06287000", lat: 45.3175, lon: -107.9447 },
+  { name: "Big Hole River",     state: "MT", section: "Melrose to Glen",     siteCode: "06025500", lat: 45.6385, lon: -112.6840 },
+  { name: "Missouri River",     state: "MT", section: "Below Holter Dam",    siteCode: "06066500", lat: 47.0264, lon: -111.9217 },
+  { name: "Gallatin River",     state: "MT", section: "Gallatin Canyon",     siteCode: "06043500", lat: 45.4889, lon: -111.2839 },
+  { name: "Beaverhead River",   state: "MT", section: "Below Clark Canyon",  siteCode: "06016000", lat: 45.0192, lon: -112.8633 },
+  // Wyoming
+  { name: "Snake River",        state: "WY", section: "Jackson Hole",        siteCode: "13013650", lat: 43.5417, lon: -110.7472 },
+  { name: "North Fork Shoshone",state: "WY", section: "Wapiti to Cody",      siteCode: "06281000", lat: 44.4711, lon: -109.4225 },
+  { name: "Green River",        state: "WY", section: "Below Fontenelle",    siteCode: "09211200", lat: 42.0292, lon: -110.0644 },
+  { name: "North Platte River", state: "WY", section: "Miracle Mile",        siteCode: "06630000", lat: 42.2014, lon: -106.7497 },
+  // Idaho
+  { name: "Henrys Fork",        state: "ID", section: "Box Canyon to Last Chance", siteCode: "13042500", lat: 44.4925, lon: -111.3697 },
+  { name: "South Fork Snake",   state: "ID", section: "Below Palisades",     siteCode: "13037500", lat: 43.4039, lon: -111.1939 },
+  { name: "Silver Creek",       state: "ID", section: "Picabo",              siteCode: "13150430", lat: 43.3197, lon: -114.1158 },
+  // Utah
+  { name: "Green River",        state: "UT", section: "A Section — Flaming Gorge", siteCode: "09234500", lat: 40.9089, lon: -109.4225 },
+  { name: "Provo River",        state: "UT", section: "Middle Provo",        siteCode: "10155500", lat: 40.5444, lon: -111.4031 },
+  { name: "Weber River",        state: "UT", section: "Below Echo Reservoir",siteCode: "10128500", lat: 40.9461, lon: -111.4400 },
+];
+
+const SEED_FLIES = [
+  // Dries
+  { name: "Parachute Adams",     type: "Dry",        sizes: "12–22", imitates: "Mayflies (general), BWO, PMD", conditions: "Overcast, mayfly hatch in progress", notes: "The most versatile dry in the box. Match size to hatch." },
+  { name: "Elk Hair Caddis",     type: "Dry",        sizes: "12–18", imitates: "Adult caddis", conditions: "Riffles, evening rises, summer caddis hatches", notes: "Skate or dead-drift. Olive, tan, and black work." },
+  { name: "Royal Wulff",         type: "Dry",        sizes: "10–16", imitates: "Attractor — broad mayfly profile", conditions: "Pocket water, low light, fast water", notes: "Highly visible — great searcher in tumbling water." },
+  { name: "Stimulator",          type: "Dry",        sizes: "8–14",  imitates: "Stoneflies, hoppers, caddis", conditions: "Summer freestone rivers", notes: "Floats high — good hopper-dropper anchor." },
+  { name: "Griffith's Gnat",     type: "Dry",        sizes: "18–24", imitates: "Midge cluster", conditions: "Tailwater winters, midge hatches", notes: "Tiny and deadly when fish are sipping midges." },
+  // Nymphs
+  { name: "Pheasant Tail Nymph", type: "Nymph",      sizes: "14–22", imitates: "Mayfly nymph (BWO, PMD)", conditions: "Year-round, especially pre-hatch", notes: "Tungsten beadhead versions sink faster." },
+  { name: "Hare's Ear",          type: "Nymph",      sizes: "10–18", imitates: "Generic mayfly / caddis nymph", conditions: "Almost always", notes: "Buggy and impressionistic. Carry beadhead + unweighted." },
+  { name: "Copper John",         type: "Nymph",      sizes: "12–20", imitates: "Heavy attractor nymph", conditions: "Deep runs, point fly in a tandem rig", notes: "Use as your anchor — gets the dropper down." },
+  { name: "Zebra Midge",         type: "Nymph",      sizes: "18–22", imitates: "Midge pupa", conditions: "Tailwaters, winter, slow runs", notes: "Black/silver and red/copper both crush it." },
+  { name: "RS2",                 type: "Emerger",    sizes: "18–22", imitates: "Emerging BWO / midge", conditions: "Tailwater, slack water, pre-hatch", notes: "Fish in the film or as a dropper." },
+  // Streamers
+  { name: "Woolly Bugger",       type: "Streamer",   sizes: "6–12",  imitates: "Sculpin, leech, baitfish", conditions: "Stained water, low light, aggressive fish", notes: "Black, olive, and white. Strip-pause retrieve." },
+  { name: "Sculpzilla",          type: "Streamer",   sizes: "4–8",   imitates: "Sculpin", conditions: "Big-fish water, off-color flows", notes: "Get it deep, swing or dead-drift then strip." },
+  // Terrestrials
+  { name: "Chubby Chernobyl",    type: "Terrestrial",sizes: "8–14",  imitates: "Hopper / stonefly hybrid", conditions: "Summer freestones, hopper-dropper rigs", notes: "Tan, purple, gold all reliable." },
+  { name: "Foam Ant",            type: "Terrestrial",sizes: "14–18", imitates: "Black or cinnamon ant", conditions: "Warm afternoons, banks, summer", notes: "Don't underestimate — picky fish eat ants." },
+];
+
+const SEED_LEADERS = [
+  { name: "Dry Fly — Technical", situation: "Spring creeks, tailwaters, picky risers on flat water",
+    rod: "3–5 wt", length: "12 ft", taper: "5X tapered", tippet: "18–24 in of 5X or 6X",
+    diagram: "Fly line ─── 9ft 5X leader ─── 18–24in 5X/6X tippet ─── dry",
+    tips: "Long, fine tippet = drag-free drifts. Use floatant only on the fly, not the tippet." },
+  { name: "Dry Fly — Freestone", situation: "Pocket water, riffles, attractors like Stimulators and Wulffs",
+    rod: "4–6 wt", length: "9 ft", taper: "4X tapered", tippet: "12 in of 4X",
+    diagram: "Fly line ─── 9ft 4X leader ─── 12in 4X tippet ─── dry",
+    tips: "Short and stout. Easy to mend in fast water." },
+  { name: "Two-Fly Nymph (Indicator)", situation: "Standard nymphing under a thingamabobber or yarn indicator",
+    rod: "5–6 wt", length: "7.5–9 ft", taper: "3X tapered", tippet: "18 in 4X to anchor + 12–18 in 5X dropper",
+    diagram: "Indicator\n  │\n  ├── 7.5–9ft 3X leader\n  ├── 18in 4X tippet ─ anchor (heavy)\n  └── 12–18in 5X tag ─ dropper (small)",
+    tips: "Indicator at ~1.5× water depth from anchor fly. Add split shot above the knot if not getting down." },
+  { name: "Euro / Tight-Line Nymph", situation: "High-stick contact nymphing in moderate-depth runs",
+    rod: "3–4 wt euro rod", length: "20 ft + sighter", taper: "Level mono / fluoro", tippet: "Sighter → 4–5 ft of 5X tippet → anchor, dropper 12in above",
+    diagram: "Long mono leader ─── sighter ─── 5X tippet\n                                    │\n                            12in tag ─ dropper\n                                    │\n                                  tungsten anchor",
+    tips: "Tag knot is a tippet ring or triple surgeon's. Lead the flies — keep a tight line." },
+  { name: "Hopper-Dropper", situation: "Summer freestones, banks, attractor + nymph",
+    rod: "5–6 wt", length: "9 ft", taper: "3X tapered", tippet: "24–36 in of 4X off the hopper bend → nymph",
+    diagram: "9ft 3X leader ─── big foam hopper\n                       │ (off hook bend)\n                       └── 24–36in 4X tippet ─ small nymph",
+    tips: "Hopper hook bend, not the eye. Adjust dropper length to water depth." },
+  { name: "Streamer — Floating Line", situation: "Shallow runs, banks, sight-fishing streamers",
+    rod: "6–8 wt", length: "7.5 ft", taper: "1X or 0X tapered", tippet: "18 in of 0X–2X fluorocarbon",
+    diagram: "Fly line ─── 7.5ft 1X leader ─── 18in 0X/1X fluoro ─── streamer (loop knot)",
+    tips: "Loop knot for action. Vary strip cadence to find what they want." },
+  { name: "Streamer — Sinking Tip", situation: "Deep runs, off-color water, big-fish hunting",
+    rod: "6–8 wt", length: "4–5 ft (short)", taper: "Straight fluorocarbon", tippet: "4–5 ft of 0X–2X fluoro",
+    diagram: "Sinking tip line ─── 4–5ft 0X/1X fluoro ─── big articulated streamer",
+    tips: "Short leader keeps the fly down with the tip. Long pauses can trigger eats." },
+];
+
+const FLY_TYPES = ["Dry", "Nymph", "Streamer", "Emerger", "Terrestrial", "Wet"];
+
+// ---------- IndexedDB ----------
+
+const DB_NAME = "flyfish-db";
+const DB_VERSION = 1;
+const STORES = ["rivers", "trips", "memos", "flies", "leaders", "meta"];
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      for (const s of STORES) {
+        if (!db.objectStoreNames.contains(s)) {
+          db.createObjectStore(s, { keyPath: "id", autoIncrement: true });
+        }
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function tx(db, store, mode = "readonly") {
+  return db.transaction(store, mode).objectStore(store);
+}
+
+function dbGetAll(db, store) {
+  return new Promise((res, rej) => {
+    const r = tx(db, store).getAll();
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+function dbGet(db, store, id) {
+  return new Promise((res, rej) => {
+    const r = tx(db, store).get(id);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+function dbPut(db, store, value) {
+  return new Promise((res, rej) => {
+    const r = tx(db, store, "readwrite").put(value);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+
+function dbDelete(db, store, id) {
+  return new Promise((res, rej) => {
+    const r = tx(db, store, "readwrite").delete(id);
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error);
+  });
+}
+
+async function seedIfNeeded(db) {
+  const seeded = await dbGet(db, "meta", 1);
+  if (seeded && seeded.value === true) return;
+  for (const r of SEED_RIVERS) {
+    await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+  }
+  for (const f of SEED_FLIES) {
+    await dbPut(db, "flies", { ...f, favorite: false, imageDataUrl: null });
+  }
+  for (const l of SEED_LEADERS) {
+    await dbPut(db, "leaders", l);
+  }
+  await dbPut(db, "meta", { id: 1, value: true });
+}
+
+// ---------- API calls ----------
+
+async function fetchUSGS(siteCode) {
+  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&parameterCd=00060,00010,00065&siteStatus=all`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS ${r.status}`);
+  const data = await r.json();
+  const out = { flowCFS: null, waterTempF: null, gaugeHeightFt: null, observedAt: null };
+  const series = data?.value?.timeSeries ?? [];
+  for (const s of series) {
+    const code = s?.variable?.variableCode?.[0]?.value;
+    const latest = s?.values?.[0]?.value?.slice(-1)?.[0];
+    if (!latest) continue;
+    const v = parseFloat(latest.value);
+    if (!isFinite(v) || v < -100000) continue;
+    if (code === "00060") out.flowCFS = v;
+    else if (code === "00010") out.waterTempF = v * 9/5 + 32;
+    else if (code === "00065") out.gaugeHeightFt = v;
+    if (!out.observedAt) out.observedAt = latest.dateTime;
+  }
+  return out;
+}
+
+async function lookupUSGSSite(siteCode) {
+  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&parameterCd=00060,00065,00010&siteStatus=all`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS ${r.status}`);
+  const data = await r.json();
+  const ts = data?.value?.timeSeries;
+  if (!ts?.length) throw new Error("site not found or has no active data");
+  const info = ts[0].sourceInfo;
+  const geo  = info?.geoLocation?.geogLocation;
+  if (!geo) throw new Error("no coordinates returned");
+  return { name: info.siteName, lat: geo.latitude, lon: geo.longitude };
+}
+
+async function fetchWeather(lat, lon) {
+  const params = new URLSearchParams({
+    latitude: lat, longitude: lon,
+    current: "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,surface_pressure,cloud_cover",
+    temperature_unit: "fahrenheit",
+    wind_speed_unit: "mph",
+    precipitation_unit: "inch",
+    timezone: "auto",
+  });
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+  if (!r.ok) throw new Error(`Open-Meteo ${r.status}`);
+  const data = await r.json();
+  const c = data?.current ?? {};
+  return {
+    airTempF: c.temperature_2m,
+    humidity: c.relative_humidity_2m,
+    precipIn: c.precipitation,
+    windMph: c.wind_speed_10m,
+    windDir: c.wind_direction_10m,
+    pressureHpa: c.surface_pressure,
+    cloudPct: c.cloud_cover,
+    observedAt: c.time,
+  };
+}
+
+function compass(deg) {
+  if (deg == null || !isFinite(deg)) return "";
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  return dirs[Math.round((deg % 360) / 22.5) % 16];
+}
+
+function flowTrend(current, previous) {
+  if (current == null || previous == null || previous === 0) return null;
+  const delta = (current - previous) / previous;
+  if (delta > 0.05) return "rising";
+  if (delta < -0.05) return "falling";
+  return "stable";
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+// ---------- state ----------
+
+const state = {
+  db: null,
+  tab: "rivers",
+  rivers: [],
+  trips: [],
+  flies: [],
+  leaders: [],
+  filters: {
+    riverSearch: "",
+    flyType: null,
+    flySearch: "",
+  },
+  recording: null, // { mediaRecorder, chunks, startedAt, timerId, elapsed }
+  playingMemoId: null,
+  playingAudio: null,
+  session: null,   // { startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather, _timerId }
+};
+
+async function reload() {
+  state.rivers = await dbGetAll(state.db, "rivers");
+  state.trips = (await dbGetAll(state.db, "trips")).sort((a,b) => (b.date||0) - (a.date||0));
+  state.flies = await dbGetAll(state.db, "flies");
+  state.leaders = await dbGetAll(state.db, "leaders");
+}
+
+// ---------- rendering ----------
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+function el(tag, attrs = {}, children = []) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "dataset") Object.assign(e.dataset, v);
+    else if (v !== null && v !== undefined) e.setAttribute(k, v);
+  }
+  for (const c of (Array.isArray(children) ? children : [children])) {
+    if (c == null) continue;
+    e.append(c instanceof Node ? c : document.createTextNode(c));
+  }
+  return e;
+}
+
+function icon(d, size = 18) {
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="currentColor"><path d="${d}"/></svg>`;
+}
+
+const ICONS = {
+  drop: "M12 2s7 8.5 7 13a7 7 0 11-14 0c0-4.5 7-13 7-13z",
+  thermo: "M12 3a3 3 0 013 3v8.17a4 4 0 11-6 0V6a3 3 0 013-3zm0 2a1 1 0 00-1 1v9.05A2 2 0 1014 16a2 2 0 00-1-1.73V6a1 1 0 00-1-1z",
+  ruler: "M3 7v10h18V7H3zm2 2h2v3h2V9h2v3h2V9h2v3h2V9h2v6H5V9z",
+  sun: "M12 6a6 6 0 100 12 6 6 0 000-12zm0-4v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41",
+  wind: "M3 8h11a3 3 0 100-6 3 3 0 00-3 3M3 16h15a3 3 0 110 6 3 3 0 01-3-3M3 12h18",
+  baro: "M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 110 16 8 8 0 010-16zm0 2v6l4 4",
+  rain: "M6 14a4 4 0 010-8 5 5 0 019.6-2A4 4 0 0118 14H6zm2 3l-1 3m4-3l-1 3m4-3l-1 3",
+  cloud: "M6 14a4 4 0 010-8 5 5 0 019.6-2A4 4 0 0118 14H6z",
+  humid: "M12 3l5 9a5 5 0 11-10 0l5-9z",
+  star: "M12 2l3 7h7l-5.5 4.5L18 22l-6-4-6 4 1.5-8.5L2 9h7l3-7z",
+  starOutline: "M12 5.5l1.9 4.4 4.8.4-3.6 3.1 1 4.6L12 15.5l-4.1 2.5 1-4.6-3.6-3.1 4.8-.4L12 5.5zM12 2L9 9H2l5.5 4.5L6 22l6-4 6 4-1.5-8.5L22 9h-7l-3-7z",
+  plus: "M11 11V5h2v6h6v2h-6v6h-2v-6H5v-2h6z",
+  close: "M12 10.6L17 5.6 18.4 7l-5 5 5 5L17 18.4l-5-5-5 5L5.6 17l5-5-5-5L7 5.6l5 5z",
+  trash: "M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13a2 2 0 002 2h6a2 2 0 002-2l1-13H6zm3 2h2v9H9v-9zm4 0h2v9h-2v-9z",
+  play: "M8 5v14l11-7z",
+  stop: "M6 6h12v12H6z",
+  mic: "M12 14a3 3 0 003-3V5a3 3 0 00-6 0v6a3 3 0 003 3zm-7-3a7 7 0 0014 0h-2a5 5 0 01-10 0H5zm6 8h2v3h-2v-3z",
+  pin: "M12 2C8 2 5 5 5 9c0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7zm0 9a2 2 0 110-4 2 2 0 010 4z",
+  fish: "M3 12c3-4 9-6 14-3l3-2-1 4 1 4-3-2c-5 3-11 1-14-3zm14 0h.01",
+  refresh: "M12 4V1L8 5l4 4V6a6 6 0 11-6 6H4a8 8 0 108-8z",
+  search: "M10 4a6 6 0 014.6 9.9l5.4 5.4-1.4 1.4-5.4-5.4A6 6 0 1110 4zm0 2a4 4 0 100 8 4 4 0 000-8z",
+  leaf: "M5 21c0-10 9-15 16-15-1 9-6 15-16 15zm2-2c8 0 13-5 14-12-6 1-13 4-14 12z",
+  ant: "M12 2c1 0 2 1 2 2v2c1 0 2 1 2 2v3l4 1v2l-4 1v2c0 1-1 2-2 2v2c0 1-1 2-2 2s-2-1-2-2v-2c-1 0-2-1-2-2v-2l-4-1V12l4-1V8c0-1 1-2 2-2V4c0-1 1-2 2-2z",
+  ladybug: "M12 4a8 8 0 100 16 8 8 0 000-16zm0 2a6 6 0 110 12V6zm-3 3a1 1 0 100 2 1 1 0 000-2zm0 5a1 1 0 100 2 1 1 0 000-2z",
+  book: "M4 4a2 2 0 012-2h11a3 3 0 013 3v15a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm3 1v14h11V5H7z",
+  scissors: "M14.7 6.3l3 3-3 3 1.4 1.4 4.4-4.4-4.4-4.4-1.4 1.4zM9.3 6.3L7.9 4.9 3.5 9.3l4.4 4.4 1.4-1.4-3-3 3-3z",
+  map: "M9 3L3 5v16l6-2 6 2 6-2V3l-6 2-6-2zm0 2.2l6 2v13.6l-6-2V5.2z",
+  camera: "M9 3l-2 3H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-3l-2-3H9zm3 5a5 5 0 110 10 5 5 0 010-10z",
+  timer: "M12 2a10 10 0 100 20A10 10 0 0012 2zm0 2a8 8 0 110 16A8 8 0 0112 4zm1 5v5.5l3.5 2-.9 1.7L11 16V9h2z",
+};
+
+function flyTypeIcon(t) {
+  switch (t) {
+    case "Dry": return ICONS.leaf;
+    case "Nymph": return ICONS.ant;
+    case "Streamer": return ICONS.fish;
+    case "Emerger": return ICONS.drop;
+    case "Terrestrial": return ICONS.ladybug;
+    default: return ICONS.humid;
+  }
+}
+
+function setHeader(title, sub, actions = []) {
+  $("#page-title").textContent = title;
+  $("#page-sub").textContent = sub || "";
+  const a = $("#page-actions");
+  a.innerHTML = "";
+  for (const btn of actions) a.append(btn);
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function openModal(node) {
+  const m = $("#modal");
+  m.innerHTML = "";
+  m.append(node);
+  $("#modal-bg").classList.add("open");
+}
+function closeModal() {
+  $("#modal-bg").classList.remove("open");
+}
+$("#modal-bg").addEventListener("click", (e) => {
+  if (e.target.id === "modal-bg") closeModal();
+});
+
+function modalShell(title, body, footer) {
+  const wrap = el("div");
+  const head = el("div", { class: "modal-head" }, [
+    el("h2", { text: title }),
+    el("button", { class: "close", "aria-label": "Close", onclick: closeModal, html: icon(ICONS.close, 22) }),
+  ]);
+  wrap.append(head, body);
+  if (footer) wrap.append(footer);
+  return wrap;
+}
+
+// ---------- tabs ----------
+
+function switchTab(name) {
+  state.tab = name;
+  $$(".panel").forEach(p => p.classList.toggle("active", p.id === `panel-${name}`));
+  $$("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  if (name === "rivers") renderRivers();
+  else if (name === "trips") renderTrips();
+  else if (name === "flies") renderFlies();
+  else if (name === "leaders") renderLeaders();
+  else if (name === "map") renderMap();
+}
+
+$("#tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (b) switchTab(b.dataset.tab);
+});
+
+// ---------- rivers tab ----------
+
+function buildHeroCard(r) {
+  const [c1, c2] = CARD_GRADIENTS[r.id % CARD_GRADIENTS.length];
+  const trend = flowTrend(r.lastCFS, r.prevCFS);
+  const cfsStr = r.lastCFS != null ? Math.round(r.lastCFS).toLocaleString() : "—";
+  const trendLabel = trend === "rising" ? "↑ rising" : trend === "falling" ? "↓ falling" : "";
+
+  const topRow = el("div", { style: "display:flex; justify-content:space-between; align-items:flex-start;" }, [
+    el("span", { class: "h-badge", text: r.state }),
+    el("button", {
+      style: "background:transparent; border:0; padding:0; color:rgba(255,255,255,0.85); line-height:1; flex-shrink:0;",
+      html: icon(r.favorite ? ICONS.star : ICONS.starOutline, 22),
+      onclick: async (e) => {
+        e.stopPropagation();
+        r.favorite = !r.favorite;
+        await dbPut(state.db, "rivers", r);
+        await reload();
+        renderRivers();
+      },
+    }),
+  ]);
+
+  const nameBlock = el("div", {}, [
+    el("div", { class: "h-name", text: r.name }),
+    r.section ? el("div", { class: "h-section", text: r.section }) : null,
+  ]);
+
+  const cfsBlock = el("div", {}, [
+    el("div", { class: "h-cfs-row" }, [
+      el("span", { class: "h-cfs", text: cfsStr }),
+      r.lastCFS != null ? el("span", { class: "h-cfs-unit", text: "CFS" }) : null,
+    ]),
+    trendLabel ? el("div", { class: "h-trend", text: trendLabel }) : null,
+  ]);
+
+  const condParts = [];
+  if (r.lastWaterTempF != null) condParts.push(`💧 ${Math.round(r.lastWaterTempF)}°F`);
+  if (r.lastReadingAt) condParts.push(`Updated ${fmtTime(r.lastReadingAt)}`);
+  const bottomEl = el("div", { class: "h-bottom" },
+    condParts.length ? condParts.map(t => el("span", { text: t })) : [el("span", { text: "Tap for live conditions" })]
+  );
+
+  const card = el("button", {
+    class: "hero-card",
+    style: `background: linear-gradient(145deg, ${c1}, ${c2});`,
+    onclick: () => openRiver(r.id),
+  });
+  card.append(topRow, nameBlock, cfsBlock, bottomEl);
+  return card;
+}
+
+function buildRiverHero() {
+  const section = el("div", { id: "river-hero-section" });
+  const favs = state.rivers.filter(r => r.favorite);
+
+  if (!favs.length) {
+    section.append(el("div", { class: "swiper-hint" }, [
+      el("div", { html: icon(ICONS.starOutline, 28), style: "opacity:0.4; color:var(--teal);" }),
+      el("div", { text: "Star a river to feature it here" }),
+    ]));
+    return section;
+  }
+
+  const track = el("div", { class: "swiper-track" });
+  favs.forEach(r => track.append(buildHeroCard(r)));
+
+  const dotEls = favs.map((_, i) => el("div", { class: "swiper-dot" + (i === 0 ? " active" : "") }));
+  const dots = el("div", { class: "swiper-dots" });
+  dotEls.forEach(d => dots.append(d));
+
+  if (favs.length > 1) {
+    track.addEventListener("scroll", () => {
+      const w = (track.firstElementChild?.offsetWidth ?? 0) + 10;
+      if (!w) return;
+      const idx = Math.min(Math.round(track.scrollLeft / w), favs.length - 1);
+      dotEls.forEach((d, i) => d.classList.toggle("active", i === idx));
+    }, { passive: true });
+  }
+
+  section.append(el("div", { class: "swiper-section" }, [track, dots]));
+  return section;
+}
+
+function renderRivers() {
+  setHeader("Rivers", "Western US · tap for live conditions", [
+    el("button", {
+      class: "icon-btn",
+      "aria-label": "Add river",
+      html: icon(ICONS.plus, 18),
+      onclick: () => addRiverModal(),
+    }),
+  ]);
+
+  const panel = $("#panel-rivers");
+  const existingHero = $("#river-hero-section");
+
+  if (existingHero) {
+    panel.replaceChild(buildRiverHero(), existingHero);
+    const inp = $("#river-search-input");
+    if (inp && inp.value !== state.filters.riverSearch) inp.value = state.filters.riverSearch;
+  } else {
+    panel.innerHTML = "";
+    panel.append(
+      buildRiverHero(),
+      el("div", { class: "search" }, [
+        el("span", { html: icon(ICONS.search, 18) }),
+        el("input", {
+          id: "river-search-input",
+          type: "search",
+          placeholder: "Search rivers, sections, states",
+          value: state.filters.riverSearch,
+          oninput: (e) => { state.filters.riverSearch = e.target.value; renderRiverList(); },
+        }),
+      ]),
+      el("div", { id: "river-list" }),
+    );
+  }
+
+  renderRiverList();
+}
+
+function renderRiverList() {
+  const listEl = $("#river-list");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+
+  const q = state.filters.riverSearch.trim().toLowerCase();
+  const filtered = state.rivers.filter(r => {
+    if (!q) return true;
+    return (r.name + " " + (r.state || "") + " " + (r.section || "")).toLowerCase().includes(q);
+  }).sort((a, b) => {
+    if (a.favorite !== b.favorite) return b.favorite ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  if (filtered.length) {
+    filtered.forEach(r => listEl.append(riverRow(r)));
+  } else {
+    const rawQ = state.filters.riverSearch.trim();
+    listEl.append(el("div", { class: "empty", html: `${icon(ICONS.drop, 52)}<h3>No rivers match</h3><p>${rawQ ? `No results for "${rawQ}".` : "No rivers yet."} Add one below.</p>` }));
+    listEl.append(el("button", {
+      class: "btn",
+      style: "margin-top:8px;",
+      html: `${icon(ICONS.plus, 18)} <span>Add ${rawQ ? `"${rawQ}"` : "a new river"}</span>`,
+      onclick: () => addRiverModal(rawQ),
+    }));
+  }
+}
+
+function riverRow(r) {
+  const trend = flowTrend(r.lastCFS, r.prevCFS);
+  const subParts = [`${r.state}${r.section ? " · " + r.section : ""}`];
+
+  const subEl = el("div", { class: "sub" }, [
+    document.createTextNode(subParts[0]),
+    ...(trend === "rising"  ? [el("span", { class: "trend-rising",  text: " ↑ rising"  })] : []),
+    ...(trend === "falling" ? [el("span", { class: "trend-falling", text: " ↓ falling" })] : []),
+  ]);
+
+  const rightEl = el("div", { class: "river-right" }, [
+    el("button", {
+      class: "star",
+      "aria-label": "Favorite",
+      html: icon(r.favorite ? ICONS.star : ICONS.starOutline, 18),
+      style: `color: ${r.favorite ? "var(--yellow)" : "var(--muted)"}`,
+      onclick: async (e) => {
+        e.stopPropagation();
+        r.favorite = !r.favorite;
+        await dbPut(state.db, "rivers", r);
+        await reload();
+        renderRivers();
+      },
+    }),
+    r.lastCFS != null ? el("div", { class: "river-cfs" }, [
+      el("div", { class: "cfs-v", text: Math.round(r.lastCFS).toString() }),
+      el("div", { class: "cfs-u", text: "cfs" }),
+    ]) : null,
+  ]);
+
+  return el("button", {
+    class: "river-row",
+    onclick: () => openRiver(r.id),
+  }, [
+    el("div", { class: "drop", html: icon(ICONS.drop, 18) }),
+    el("div", { class: "meta" }, [
+      el("div", { class: "name", text: r.name }),
+      subEl,
+    ]),
+    rightEl,
+  ]);
+}
+
+// ---------- river detail (modal) ----------
+
+async function openRiver(id) {
+  const r = await dbGet(state.db, "rivers", id);
+  if (!r) return;
+  const body = el("div");
+
+  const sub = el("div", {
+    style: "color:var(--muted); font-size:13px; margin-bottom:10px;",
+    text: `${r.state}${r.section ? " · " + r.section : ""} · USGS ${r.siteCode}`,
+  });
+  body.append(sub);
+
+  const metrics = el("div", { class: "card" }, [conditionsGridSkeleton()]);
+  body.append(metrics);
+
+  const mapDiv = el("div", { class: "card", style: "padding:0; overflow:hidden;" }, [
+    el("div", { id: "river-mini-map", style: "height:200px;" })
+  ]);
+  body.append(mapDiv);
+
+  const startBtn = el("button", {
+    class: "btn",
+    html: `${icon(ICONS.plus, 18)} <span>Start a Trip Here</span>`,
+    onclick: () => { closeModal(); newTripModal(r); },
+  });
+  const refreshBtn = el("button", {
+    class: "btn secondary",
+    html: `${icon(ICONS.refresh, 18)} <span>Refresh</span>`,
+    onclick: () => refreshRiverConditions(r, metrics),
+    style: "margin-top:8px;",
+  });
+  const deleteBtn = el("button", {
+    class: "btn danger",
+    html: `${icon(ICONS.trash, 18)} <span>Delete River</span>`,
+    style: "margin-top:8px;",
+    onclick: async (e) => {
+      e.preventDefault();
+      const tripCount = state.trips.filter(t => t.riverId === r.id).length;
+      const msg = `Delete ${r.name}${r.section ? " — " + r.section : ""}?` +
+        (tripCount ? `\n\n${tripCount} trip(s) reference this river and will be kept.` : "");
+      if (!confirm(msg)) return;
+      await dbDelete(state.db, "rivers", r.id);
+      await reload();
+      renderRivers();
+      closeModal();
+      toast("River deleted");
+    },
+  });
+  body.append(startBtn, refreshBtn, deleteBtn);
+
+  if (r.notes) {
+    body.append(el("div", { class: "card" }, [
+      el("h3", { text: "Notes" }),
+      el("div", { style: "color:var(--muted)", text: r.notes }),
+    ]));
+  }
+
+  openModal(modalShell(r.name, body));
+
+  // Init mini-map after modal is in DOM
+  setTimeout(() => {
+    const m = L.map("river-mini-map", { zoomControl: false, attributionControl: false })
+      .setView([r.lat, r.lon], 11);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(m);
+    L.marker([r.lat, r.lon]).addTo(m).bindPopup(r.name);
+  }, 50);
+
+  refreshRiverConditions(r, metrics);
+}
+
+function conditionsGridSkeleton() {
+  const skGrid = (n) => {
+    const g = el("div", { class: "metrics-grid" });
+    for (let i = 0; i < n; i++) {
+      g.append(el("div", { class: "metric" }, [
+        el("div", { class: "skeleton", style: "height:18px; width:60%; margin:6px 0;" }),
+        el("div", { class: "skeleton", style: "height:10px; width:40%;" }),
+      ]));
+    }
+    return g;
+  };
+  const wrap = el("div");
+  wrap.append(
+    el("div", { class: "skeleton", style: "height:11px; width:90px; margin-bottom:8px;" }),
+    skGrid(3),
+    el("div", { class: "skeleton", style: "height:11px; width:110px; margin:12px 0 8px;" }),
+    skGrid(6),
+  );
+  return wrap;
+}
+
+function metric(label, value, unit, ic, color) {
+  return el("div", { class: "metric" }, [
+    el("div", { class: "ico", style: `color:${color}`, html: icon(ic, 18) }),
+    el("div", { class: "v", text: value ?? "—" }),
+    el("div", { class: "u", text: unit ?? "" }),
+    el("div", { class: "l", text: label }),
+  ]);
+}
+
+function buildConditionsGrid(u, w) {
+  const f = (n, d = 0) => (n == null || !isFinite(n)) ? "—" : (d === 0 ? Math.round(n).toString() : n.toFixed(d));
+
+  const usgsGrid = el("div", { class: "metrics-grid" }, [
+    metric("Flow",  f(u?.flowCFS),         "cfs", ICONS.drop,   "var(--teal)"),
+    metric("Water", f(u?.waterTempF, 1),   "°F",  ICONS.thermo, "#2d6a8e"),
+    metric("Gauge", f(u?.gaugeHeightFt,2), "ft",  ICONS.ruler,  "#6a5a9e"),
+  ]);
+
+  const wxGrid = el("div", { class: "metrics-grid" }, [
+    metric("Air",      f(w?.airTempF),    "°F",                        ICONS.sun,   "var(--gold)"),
+    metric("Wind",     f(w?.windMph),     compass(w?.windDir) || "mph", ICONS.wind,  "var(--teal)"),
+    metric("Pressure", f(w?.pressureHpa), "hPa",                       ICONS.baro,  "#7a6aae"),
+    metric("Precip",   f(w?.precipIn, 2), "in",                        ICONS.rain,  "#2d6a8e"),
+    metric("Clouds",   f(w?.cloudPct),    "%",                         ICONS.cloud, "var(--muted)"),
+    metric("Humidity", f(w?.humidity),    "%",                         ICONS.humid, "var(--teal)"),
+  ]);
+
+  const wrap = el("div");
+  wrap.append(
+    el("div", { class: "cond-header" }, [
+      el("span", { class: "cond-src", text: "USGS · River" }),
+      u?.observedAt ? el("span", { class: "cond-time", text: fmtTime(u.observedAt) }) : null,
+    ]),
+    usgsGrid,
+    el("div", { class: "cond-header" }, [
+      el("span", { class: "cond-src", text: "Weather · Now" }),
+      el("span", { class: "cond-time", text: "Open-Meteo" }),
+    ]),
+    wxGrid,
+  );
+  return wrap;
+}
+
+async function refreshRiverConditions(r, container) {
+  let usgs = null, weather = null, errs = [];
+  try { usgs = await fetchUSGS(r.siteCode); } catch (e) { errs.push("USGS: " + e.message); }
+  try { weather = await fetchWeather(r.lat, r.lon); } catch (e) { errs.push("Weather: " + e.message); }
+
+  container.innerHTML = "";
+  container.append(buildConditionsGrid(usgs, weather));
+  if (errs.length) {
+    container.append(el("div", { style: "color:var(--red); font-size:12px; margin-top:8px;", text: errs.join(" · ") }));
+  }
+
+  // Cache on the river record; preserve previous CFS for trend arrow
+  if (usgs) {
+    r.prevCFS = r.lastCFS ?? null;
+    r.lastCFS = usgs.flowCFS;
+    r.lastWaterTempF = usgs.waterTempF;
+    r.lastReadingAt = usgs.observedAt;
+    await dbPut(state.db, "rivers", r);
+    await reload();
+  }
+}
+
+function addRiverModal(prefillName = "") {
+  const s = { name: prefillName, st: "", section: "", siteCode: "", lat: "", lon: "" };
+
+  const nameInput = el("input", { type: "text", placeholder: "e.g. South Platte River", value: s.name, oninput: (e) => s.name = e.target.value });
+  const stInput   = el("input", { type: "text", placeholder: "e.g. CO", oninput: (e) => s.st = e.target.value });
+  const secInput  = el("input", { type: "text", placeholder: "e.g. Wildcat Canyon", oninput: (e) => s.section = e.target.value });
+  const codeInput = el("input", { type: "text", placeholder: "e.g. 06700000", oninput: (e) => s.siteCode = e.target.value });
+  const latInput  = el("input", { type: "number", step: "any", placeholder: "39.162778", oninput: (e) => s.lat = e.target.value });
+  const lonInput  = el("input", { type: "number", step: "any", placeholder: "-105.309722", oninput: (e) => s.lon = e.target.value });
+
+  const lookupBtn = el("button", {
+    class: "btn secondary",
+    style: "margin-top:8px;",
+    html: `${icon(ICONS.search, 16)} <span>Look up gauge info</span>`,
+    onclick: async (e) => {
+      e.preventDefault();
+      if (!s.siteCode.trim()) { toast("Enter a site code first"); return; }
+      lookupBtn.disabled = true;
+      lookupBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Looking up…</span>`;
+      try {
+        const info = await lookupUSGSSite(s.siteCode.trim());
+        if (!s.name) { s.name = info.name; nameInput.value = info.name; }
+        s.lat = String(info.lat); latInput.value = info.lat;
+        s.lon = String(info.lon); lonInput.value = info.lon;
+        toast(`Found: ${info.name}`);
+      } catch (err) {
+        toast(`Not found — ${err.message}`);
+      } finally {
+        lookupBtn.disabled = false;
+        lookupBtn.innerHTML = `${icon(ICONS.search, 16)} <span>Look up gauge info</span>`;
+      }
+    },
+  });
+
+  const form = el("form");
+  form.append(
+    el("div", { class: "form-group" }, [el("label", { text: "River name" }), nameInput]),
+    el("div", { class: "form-row" }, [
+      el("div", { class: "form-group" }, [el("label", { text: "State" }), stInput]),
+      el("div", { class: "form-group" }, [el("label", { text: "Section (optional)" }), secInput]),
+    ]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "USGS site code" }),
+      codeInput,
+      el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Find at waterdata.usgs.gov — copy the 8–15 digit site number, then tap Look up." }),
+      lookupBtn,
+    ]),
+    el("div", { class: "form-row" }, [
+      el("div", { class: "form-group" }, [el("label", { text: "Latitude" }), latInput]),
+      el("div", { class: "form-group" }, [el("label", { text: "Longitude" }), lonInput]),
+    ]),
+  );
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); } }),
+    el("button", {
+      class: "btn", text: "Save",
+      onclick: async (e) => {
+        e.preventDefault();
+        if (!s.name || !s.siteCode) { toast("Name and site code required"); return; }
+        await dbPut(state.db, "rivers", {
+          name: s.name.trim(),
+          state: s.st.trim().toUpperCase() || "—",
+          section: s.section.trim(),
+          siteCode: s.siteCode.trim(),
+          lat: parseFloat(s.lat) || 0,
+          lon: parseFloat(s.lon) || 0,
+          favorite: false, custom: true,
+          lastCFS: null, lastWaterTempF: null, lastReadingAt: null,
+        });
+        await reload();
+        state.filters.riverSearch = "";
+        renderRivers();
+        closeModal();
+        toast("River added");
+      },
+    }),
+  ]);
+
+  openModal(modalShell("Add a river", form, footer));
+}
+
+// ---------- trips tab ----------
+
+function renderTrips() {
+  setHeader("Trips", `${state.trips.length} logged`, [
+    el("button", {
+      class: "icon-btn",
+      "aria-label": "New trip",
+      html: icon(ICONS.plus, 18),
+      onclick: () => newTripModal(),
+    }),
+  ]);
+  const panel = $("#panel-trips");
+  panel.innerHTML = "";
+
+  if (!state.trips.length) {
+    panel.append(el("div", { class: "empty", html: `${icon(ICONS.book, 52)}<h3>No trips logged yet</h3><p>Tap + to log your first outing. We'll snapshot flow + weather and let you record voice memos.</p>` }));
+    return;
+  }
+
+  for (const t of state.trips) {
+    const row = el("div", { class: "card trip-row", onclick: () => openTrip(t.id) }, [
+      el("div", { class: "top" }, [
+        el("div", { class: "where", text: t.riverName }),
+        el("div", { class: "when", text: new Date(t.date).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) }),
+      ]),
+      t.locationLabel ? el("div", { style: "color:var(--muted); font-size:12px;", text: t.locationLabel }) : null,
+      el("div", { class: "stats", text: [
+        t.flowCFS != null ? `${Math.round(t.flowCFS)} cfs` : null,
+        t.waterTempF != null ? `${Math.round(t.waterTempF)}° water` : null,
+        t.fishLanded ? `${t.fishLanded} fish` : null,
+        t.memoCount ? `🎤 ${t.memoCount} memo${t.memoCount>1?"s":""}` : null,
+      ].filter(Boolean).join(" · ") }),
+    ]);
+    panel.append(row);
+  }
+}
+
+async function newTripModal(prefRiver) {
+  const formState = {
+    riverId: prefRiver?.id ?? state.rivers[0]?.id ?? null,
+    date: new Date().toISOString().slice(0,16),
+    locationLabel: "",
+    fliesUsed: "",
+    leaderSetup: "",
+    fishLanded: 0,
+    biggest: "",
+    notes: "",
+    usgs: null,
+    weather: null,
+    coords: null,
+    pendingMemos: [], // { blob, mime, duration, label, name }
+  };
+
+  const body = el("div");
+
+  // Form
+  const riverSel = el("select", {
+    onchange: (e) => { formState.riverId = Number(e.target.value); }
+  });
+  for (const r of state.rivers) {
+    const o = el("option", { value: r.id, text: r.section ? `${r.name} — ${r.section}` : r.name });
+    if (r.id === formState.riverId) o.selected = true;
+    riverSel.append(o);
+  }
+
+  body.append(
+    el("div", { class: "form-group" }, [
+      el("label", { text: "When" }),
+      el("input", { type: "datetime-local", value: formState.date, oninput: (e) => formState.date = e.target.value }),
+    ]),
+    el("div", { class: "form-group" }, [el("label", { text: "River" }), riverSel]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Spot / access (optional)" }),
+      el("input", { type: "text", placeholder: "e.g. Below Cheesman Dam", oninput: (e) => formState.locationLabel = e.target.value }),
+    ]),
+  );
+
+  // Conditions snapshot
+  const condCard = el("div", { class: "card" });
+  const snapBtn = el("button", {
+    class: "btn secondary",
+    html: `${icon(ICONS.refresh, 18)} <span>Snapshot current conditions</span>`,
+    onclick: async (e) => {
+      e.preventDefault();
+      snapBtn.disabled = true;
+      condCard.innerHTML = "";
+      condCard.append(conditionsGridSkeleton());
+      const river = state.rivers.find(r => r.id === formState.riverId);
+      if (!river) { snapBtn.disabled = false; return; }
+      // Try geolocation first
+      try {
+        formState.coords = await new Promise((res, rej) => {
+          navigator.geolocation.getCurrentPosition(
+            p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
+            rej, { timeout: 8000, maximumAge: 600000 }
+          );
+        });
+      } catch (_) { formState.coords = { lat: river.lat, lon: river.lon }; }
+      try { formState.usgs = await fetchUSGS(river.siteCode); } catch (_) {}
+      try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
+      condCard.innerHTML = "";
+      condCard.append(buildConditionsGrid(formState.usgs, formState.weather));
+      snapBtn.disabled = false;
+    }
+  });
+  body.append(snapBtn, condCard);
+
+  // Catch details
+  const stepperRow = el("div", { class: "form-row" }, [
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Fish landed" }),
+      el("input", { type: "number", min: 0, value: 0, oninput: (e) => formState.fishLanded = parseInt(e.target.value) || 0 }),
+    ]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Biggest (in)" }),
+      el("input", { type: "number", step: "0.1", oninput: (e) => formState.biggest = e.target.value }),
+    ]),
+  ]);
+  body.append(
+    stepperRow,
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Flies used" }),
+      el("input", { type: "text", placeholder: "e.g. PT #18, Zebra #20", oninput: (e) => formState.fliesUsed = e.target.value }),
+    ]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Leader / tippet" }),
+      el("input", { type: "text", placeholder: "e.g. 9ft 3X + 18in 5X", oninput: (e) => formState.leaderSetup = e.target.value }),
+    ]),
+  );
+
+  // Voice memos
+  const memoCard = el("div", { class: "card" });
+  memoCard.append(el("h3", { text: "Voice memos" }));
+  const memoList = el("div");
+  const recBtn = el("button", { class: "record-btn", html: `${icon(ICONS.mic, 18)} <span>Record memo</span>` });
+  recBtn.onclick = (e) => { e.preventDefault(); toggleRecord(recBtn, memoList, formState); };
+  memoCard.append(recBtn, memoList);
+  body.append(memoCard);
+
+  // Notes
+  body.append(
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Notes" }),
+      el("textarea", { rows: 4, oninput: (e) => formState.notes = e.target.value }),
+    ])
+  );
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); stopRecordingIfAny(); closeModal(); } }),
+    el("button", {
+      class: "btn", text: "Save trip",
+      onclick: async (e) => {
+        e.preventDefault();
+        stopRecordingIfAny();
+        const river = state.rivers.find(r => r.id === formState.riverId);
+        if (!river) { toast("Pick a river"); return; }
+        const tripId = await dbPut(state.db, "trips", {
+          date: new Date(formState.date).getTime(),
+          riverId: river.id,
+          riverName: river.section ? `${river.name} — ${river.section}` : river.name,
+          locationLabel: formState.locationLabel,
+          lat: formState.coords?.lat ?? river.lat,
+          lon: formState.coords?.lon ?? river.lon,
+          flowCFS: formState.usgs?.flowCFS ?? null,
+          waterTempF: formState.usgs?.waterTempF ?? null,
+          gaugeHeightFt: formState.usgs?.gaugeHeightFt ?? null,
+          airTempF: formState.weather?.airTempF ?? null,
+          windMph: formState.weather?.windMph ?? null,
+          windDir: formState.weather?.windDir ?? null,
+          pressureHpa: formState.weather?.pressureHpa ?? null,
+          precipIn: formState.weather?.precipIn ?? null,
+          cloudPct: formState.weather?.cloudPct ?? null,
+          humidity: formState.weather?.humidity ?? null,
+          fliesUsed: formState.fliesUsed,
+          leaderSetup: formState.leaderSetup,
+          fishLanded: formState.fishLanded,
+          biggest: parseFloat(formState.biggest) || null,
+          notes: formState.notes,
+          memoCount: formState.pendingMemos.length,
+        });
+        for (const m of formState.pendingMemos) {
+          await dbPut(state.db, "memos", { tripId, blob: m.blob, mime: m.mime, duration: m.duration, label: m.label, createdAt: Date.now() });
+        }
+        await reload();
+        renderTrips();
+        closeModal();
+        toast("Trip saved");
+      }
+    })
+  ]);
+
+  openModal(modalShell("New trip", body, footer));
+}
+
+// ---------- recording ----------
+
+async function toggleRecord(btn, listEl, formState) {
+  if (state.recording) {
+    await finishRecording(btn, listEl, formState);
+  } else {
+    await startRecording(btn);
+  }
+}
+
+async function startRecording(btn) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mr = new MediaRecorder(stream);
+    const chunks = [];
+    mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    mr.start();
+    const startedAt = Date.now();
+    btn.classList.add("recording");
+    btn.innerHTML = `<span class="dot"></span> <span>Stop · 00:00</span>`;
+    const timerId = setInterval(() => {
+      const s = Math.floor((Date.now() - startedAt) / 1000);
+      btn.innerHTML = `<span class="dot"></span> <span>Stop · ${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}</span>`;
+    }, 250);
+    state.recording = { mr, chunks, startedAt, timerId, stream };
+  } catch (err) {
+    toast("Mic permission needed");
+    console.error(err);
+  }
+}
+
+async function finishRecording(btn, listEl, formState) {
+  const rec = state.recording;
+  if (!rec) return;
+  clearInterval(rec.timerId);
+  await new Promise(res => {
+    rec.mr.onstop = res;
+    rec.mr.stop();
+  });
+  const blob = new Blob(rec.chunks, { type: rec.mr.mimeType || "audio/webm" });
+  const duration = (Date.now() - rec.startedAt) / 1000;
+  rec.stream.getTracks().forEach(t => t.stop());
+  state.recording = null;
+  btn.classList.remove("recording");
+  btn.innerHTML = `${icon(ICONS.mic, 18)} <span>Record memo</span>`;
+  if (formState) {
+    formState.pendingMemos.push({ blob, mime: blob.type, duration, label: "", name: `memo_${Date.now()}.webm` });
+    renderPendingMemos(listEl, formState.pendingMemos);
+  } else {
+    return { blob, mime: blob.type, duration };
+  }
+}
+
+function stopRecordingIfAny() {
+  if (state.recording) {
+    try {
+      state.recording.mr.stop();
+      state.recording.stream.getTracks().forEach(t => t.stop());
+      clearInterval(state.recording.timerId);
+    } catch(e){}
+    state.recording = null;
+  }
+}
+
+function renderPendingMemos(listEl, memos) {
+  listEl.innerHTML = "";
+  memos.forEach((m, idx) => {
+    const row = el("div", { class: "memo-row" }, [
+      el("div", { class: "play", html: icon(ICONS.mic, 16) }),
+      el("div", { class: "meta" }, [
+        el("input", { type: "text", placeholder: "Label (optional)", value: m.label, oninput: (e) => m.label = e.target.value, style: "background:transparent; border:0; padding:0; font-size:14px;" }),
+        el("div", { class: "dur", text: `${m.duration.toFixed(1)}s` }),
+      ]),
+      el("button", { class: "del", html: icon(ICONS.trash, 18), onclick: () => { memos.splice(idx, 1); renderPendingMemos(listEl, memos); } }),
+    ]);
+    listEl.append(row);
+  });
+}
+
+// ---------- trip detail (modal) ----------
+
+async function openTrip(id) {
+  const t = await dbGet(state.db, "trips", id);
+  if (!t) return;
+  const allMemos = await dbGetAll(state.db, "memos");
+  const memos = allMemos.filter(m => m.tripId === id).sort((a,b) => b.createdAt - a.createdAt);
+
+  const body = el("div");
+
+  body.append(el("div", {
+    style: "color:var(--muted); font-size:13px; margin-bottom:8px;",
+    text: `${new Date(t.date).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}${t.locationLabel ? " · " + t.locationLabel : ""}`,
+  }));
+
+  if (t.lat != null && t.lon != null) {
+    body.append(el("div", { class: "card", style: "padding:0; overflow:hidden;" }, [
+      el("div", { id: "trip-mini-map", style: "height:200px;" })
+    ]));
+  }
+
+  const condCard = el("div", { class: "card" }, [
+    el("h3", { text: "Conditions" }),
+    buildConditionsGrid(
+      { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt },
+      { airTempF: t.airTempF, windMph: t.windMph, windDir: t.windDir, pressureHpa: t.pressureHpa, precipIn: t.precipIn, cloudPct: t.cloudPct, humidity: t.humidity },
+    ),
+  ]);
+  body.append(condCard);
+
+  body.append(el("div", { class: "card" }, [
+    el("h3", { text: "On the water" }),
+    rowKV("Flies used", t.fliesUsed || "—"),
+    rowKV("Leader", t.leaderSetup || "—"),
+    rowKV("Fish landed", String(t.fishLanded || 0)),
+    rowKV("Biggest", t.biggest ? `${t.biggest} in` : "—"),
+  ]));
+
+  // Memos
+  const memoCard = el("div", { class: "card" });
+  memoCard.append(el("h3", { text: "Voice memos" }));
+  if (memos.length === 0) {
+    memoCard.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "No memos for this trip." }));
+  }
+  for (const m of memos) {
+    memoCard.append(memoRow(m, t.id));
+  }
+  body.append(memoCard);
+
+  if (t.notes) {
+    body.append(el("div", { class: "card" }, [
+      el("h3", { text: "Notes" }),
+      el("div", { style: "white-space: pre-wrap; color:var(--muted)", text: t.notes }),
+    ]));
+  }
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn danger", text: "Delete trip", onclick: async (e) => {
+      e.preventDefault();
+      if (!confirm("Delete this trip and its voice memos?")) return;
+      for (const m of memos) await dbDelete(state.db, "memos", m.id);
+      await dbDelete(state.db, "trips", t.id);
+      await reload();
+      renderTrips();
+      closeModal();
+      toast("Trip deleted");
+    }})
+  ]);
+
+  openModal(modalShell(t.riverName, body, footer));
+
+  if (t.lat != null && t.lon != null) {
+    setTimeout(() => {
+      const m = L.map("trip-mini-map", { zoomControl: false, attributionControl: false })
+        .setView([t.lat, t.lon], 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(m);
+      L.marker([t.lat, t.lon]).addTo(m).bindPopup(t.riverName);
+    }, 50);
+  }
+}
+
+function rowKV(label, value) {
+  return el("div", { class: "row" }, [
+    el("div", { class: "label", text: label }),
+    el("div", { class: "value", text: value }),
+  ]);
+}
+
+function memoRow(m, tripId) {
+  const wrap = el("div", { class: "memo-row" });
+  const play = el("button", { class: "play", html: icon(ICONS.play, 16) });
+  const meta = el("div", { class: "meta" }, [
+    el("div", { class: "label", text: m.label || new Date(m.createdAt).toLocaleString() }),
+    el("div", { class: "dur", text: `${m.duration?.toFixed?.(1) ?? "?"}s` }),
+  ]);
+  const del = el("button", { class: "del", html: icon(ICONS.trash, 18) });
+
+  let url = null;
+  play.onclick = () => {
+    if (state.playingMemoId === m.id && state.playingAudio) {
+      state.playingAudio.pause();
+      state.playingAudio = null;
+      state.playingMemoId = null;
+      wrap.classList.remove("playing");
+      play.innerHTML = icon(ICONS.play, 16);
+      return;
+    }
+    if (state.playingAudio) state.playingAudio.pause();
+    if (!url) url = URL.createObjectURL(m.blob);
+    const audio = new Audio(url);
+    audio.play();
+    state.playingAudio = audio;
+    state.playingMemoId = m.id;
+    wrap.classList.add("playing");
+    play.innerHTML = icon(ICONS.stop, 16);
+    audio.onended = () => {
+      wrap.classList.remove("playing");
+      play.innerHTML = icon(ICONS.play, 16);
+      state.playingAudio = null;
+      state.playingMemoId = null;
+    };
+  };
+  del.onclick = async () => {
+    if (state.playingMemoId === m.id) { state.playingAudio?.pause(); }
+    await dbDelete(state.db, "memos", m.id);
+    const trip = await dbGet(state.db, "trips", tripId);
+    if (trip) { trip.memoCount = Math.max(0, (trip.memoCount || 0) - 1); await dbPut(state.db, "trips", trip); }
+    wrap.remove();
+  };
+
+  wrap.append(play, meta, del);
+  return wrap;
+}
+
+// ---------- flies tab ----------
+
+function renderFlies() {
+  setHeader("Flies", `${state.flies.length} patterns`, [
+    el("button", {
+      class: "icon-btn",
+      "aria-label": "Add fly",
+      html: icon(ICONS.plus, 18),
+      onclick: () => addFlyModal(),
+    }),
+  ]);
+  const panel = $("#panel-flies");
+  panel.innerHTML = "";
+
+  // Search
+  panel.append(el("div", { class: "search" }, [
+    el("span", { html: icon(ICONS.search, 18) }),
+    el("input", { type: "search", placeholder: "Search flies, hatches", value: state.filters.flySearch, oninput: (e) => { state.filters.flySearch = e.target.value; renderFlies(); } }),
+  ]));
+
+  // Chips
+  const chips = el("div", { class: "chips" });
+  const mkChip = (label, active, onclick) => el("button", { class: "chip" + (active ? " active" : ""), text: label, onclick });
+  chips.append(mkChip("All", state.filters.flyType == null, () => { state.filters.flyType = null; renderFlies(); }));
+  for (const t of FLY_TYPES) {
+    chips.append(mkChip(t, state.filters.flyType === t, () => {
+      state.filters.flyType = state.filters.flyType === t ? null : t;
+      renderFlies();
+    }));
+  }
+  panel.append(chips);
+
+  const q = state.filters.flySearch.trim().toLowerCase();
+  const filtered = state.flies.filter(f => {
+    if (state.filters.flyType && f.type !== state.filters.flyType) return false;
+    if (!q) return true;
+    return f.name.toLowerCase().includes(q) || (f.imitates||"").toLowerCase().includes(q);
+  });
+
+  const grid = el("div", { class: "fly-grid" });
+  for (const f of filtered) {
+    grid.append(flyCard(f));
+  }
+  panel.append(grid);
+  if (!filtered.length) {
+    panel.append(el("div", { class: "empty", html: `${icon(ICONS.ant, 52)}<h3>No flies match</h3>` }));
+  }
+}
+
+function flyCard(f) {
+  const hero = el("div", { class: "hero" });
+  if (f.imageDataUrl) {
+    hero.append(el("img", { src: f.imageDataUrl, alt: f.name }));
+  } else {
+    hero.append(el("div", { html: icon(flyTypeIcon(f.type), 36) }));
+  }
+  if (f.favorite) hero.append(el("div", { class: "star", html: icon(ICONS.star, 18) }));
+
+  return el("button", { class: "fly-card", onclick: () => openFly(f.id) }, [
+    hero,
+    el("div", { class: "body" }, [
+      el("div", { class: "name", text: f.name }),
+      el("div", { class: "desc", text: `${f.type} · #${f.sizes}` }),
+    ]),
+  ]);
+}
+
+async function openFly(id) {
+  const f = await dbGet(state.db, "flies", id);
+  if (!f) return;
+  const body = el("div");
+
+  const hero = el("div", { style: "height:220px; background:linear-gradient(135deg, rgba(46,125,92,0.18), rgba(45,106,142,0.1)); border-radius:14px; display:flex; align-items:center; justify-content:center; position:relative; overflow:hidden; margin-bottom:12px;" });
+  if (f.imageDataUrl) hero.append(el("img", { src: f.imageDataUrl, alt: f.name, style: "width:100%; height:100%; object-fit:cover; border-radius:14px;" }));
+  else hero.append(el("div", { html: icon(flyTypeIcon(f.type), 80), style: "color: var(--teal)" }));
+
+  // Photo picker (file input)
+  const fileInput = el("input", { type: "file", accept: "image/*", style: "display:none" });
+  fileInput.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      f.imageDataUrl = reader.result;
+      await dbPut(state.db, "flies", f);
+      await reload();
+      openFly(id); // re-render
+    };
+    reader.readAsDataURL(file);
+  };
+  const camBtn = el("button", {
+    class: "icon-btn",
+    style: "position:absolute; bottom:8px; right:8px;",
+    html: `${icon(ICONS.camera, 18)} <span>Photo</span>`,
+    onclick: (e) => { e.preventDefault(); fileInput.click(); },
+  });
+  hero.append(camBtn, fileInput);
+
+  body.append(hero);
+
+  body.append(el("div", { class: "card" }, [
+    rowKV("Type", f.type),
+    rowKV("Hook size", `#${f.sizes}`),
+    rowKV("Imitates", f.imitates),
+    rowKV("Best conditions", f.conditions),
+  ]));
+
+  if (f.notes) {
+    body.append(el("div", { class: "card" }, [
+      el("h3", { text: "Notes" }),
+      el("div", { style: "color:var(--muted); white-space:pre-wrap;", text: f.notes }),
+    ]));
+  }
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", {
+      class: "btn secondary",
+      html: f.favorite ? `${icon(ICONS.star, 18)} Unfavorite` : `${icon(ICONS.starOutline, 18)} Favorite`,
+      onclick: async (e) => {
+        e.preventDefault();
+        f.favorite = !f.favorite;
+        await dbPut(state.db, "flies", f);
+        await reload();
+        openFly(id);
+        renderFlies();
+      }
+    }),
+  ]);
+
+  openModal(modalShell(f.name, body, footer));
+}
+
+function addFlyModal() {
+  const fs = { name: "", type: "Dry", sizes: "", imitates: "", conditions: "", notes: "" };
+  const sel = el("select", { onchange: (e) => fs.type = e.target.value });
+  for (const t of FLY_TYPES) sel.append(el("option", { value: t, text: t }));
+  const form = el("div");
+  form.append(
+    el("div", { class: "form-group" }, [el("label", { text: "Name" }), el("input", { oninput: (e) => fs.name = e.target.value })]),
+    el("div", { class: "form-group" }, [el("label", { text: "Type" }), sel]),
+    el("div", { class: "form-group" }, [el("label", { text: "Hook sizes (e.g. 14–22)" }), el("input", { oninput: (e) => fs.sizes = e.target.value })]),
+    el("div", { class: "form-group" }, [el("label", { text: "Imitates" }), el("input", { oninput: (e) => fs.imitates = e.target.value })]),
+    el("div", { class: "form-group" }, [el("label", { text: "Best conditions" }), el("input", { oninput: (e) => fs.conditions = e.target.value })]),
+    el("div", { class: "form-group" }, [el("label", { text: "Notes" }), el("textarea", { rows: 3, oninput: (e) => fs.notes = e.target.value })]),
+  );
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); } }),
+    el("button", {
+      class: "btn", text: "Save",
+      onclick: async (e) => {
+        e.preventDefault();
+        if (!fs.name) { toast("Name required"); return; }
+        await dbPut(state.db, "flies", { ...fs, favorite: false, imageDataUrl: null });
+        await reload();
+        renderFlies();
+        closeModal();
+        toast("Fly added");
+      }
+    })
+  ]);
+  openModal(modalShell("Add a fly", form, footer));
+}
+
+// ---------- leaders tab ----------
+
+function renderLeaders() {
+  setHeader("Leaders", "Quick-start rigs", []);
+  const panel = $("#panel-leaders");
+  panel.innerHTML = "";
+  for (const l of state.leaders) {
+    panel.append(el("button", { class: "card", style: "width:100%; text-align:left;", onclick: () => openLeader(l.id) }, [
+      el("div", { style: "font-weight:600; margin-bottom:2px;", text: l.name }),
+      el("div", { style: "color:var(--muted); font-size:13px;", text: l.situation }),
+      el("div", { style: "margin-top:6px; color:var(--muted); font-size:12px;", text: `${l.rod} · ${l.length} · ${l.taper}` }),
+    ]));
+  }
+}
+
+async function openLeader(id) {
+  const l = await dbGet(state.db, "leaders", id);
+  if (!l) return;
+  const body = el("div");
+  body.append(el("div", { class: "card" }, [
+    el("h3", { text: "When to use it" }),
+    el("div", { style: "color:var(--muted);", text: l.situation }),
+    el("div", { style: "height:8px;" }),
+    rowKV("Rod", l.rod),
+    rowKV("Length", l.length),
+    rowKV("Taper", l.taper),
+    rowKV("Tippet", l.tippet),
+  ]));
+  body.append(el("div", { class: "card" }, [
+    el("h3", { text: "Rig diagram" }),
+    el("div", { class: "diagram", text: l.diagram }),
+  ]));
+  body.append(el("div", { class: "card" }, [
+    el("h3", { text: "Tips" }),
+    el("div", { style: "color:var(--muted); white-space:pre-wrap;", text: l.tips }),
+  ]));
+  openModal(modalShell(l.name, body));
+}
+
+// ---------- map tab ----------
+
+let mainMap = null;
+let mapLayer = null;
+function renderMap() {
+  setHeader("Map", "Rivers & trips", []);
+  const panel = $("#panel-map");
+  panel.innerHTML = "";
+  panel.append(el("div", { id: "map" }));
+
+  // Reset for safe re-init when revisiting tab
+  setTimeout(() => {
+    if (mainMap) { mainMap.remove(); mainMap = null; }
+    mainMap = L.map("map").setView([42, -108.5], 5);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: "© OpenStreetMap"
+    }).addTo(mainMap);
+
+    const riverIcon = L.divIcon({
+      className: "river-pin",
+      html: `<div style="width:24px;height:24px;border-radius:12px;background:#29b8b2;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px white;color:white;font-size:14px;">●</div>`,
+      iconSize: [24,24], iconAnchor: [12,12],
+    });
+    const tripIcon = L.divIcon({
+      className: "trip-pin",
+      html: `<div style="width:24px;height:24px;border-radius:12px;background:#e6b35a;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px white;color:white;font-size:14px;">★</div>`,
+      iconSize: [24,24], iconAnchor: [12,12],
+    });
+
+    for (const r of state.rivers) {
+      const mk = L.marker([r.lat, r.lon], { icon: riverIcon }).addTo(mainMap);
+      mk.bindPopup(`<b>${r.name}</b><br/>${r.state}${r.section ? " · " + r.section : ""}<br/><a href="#" data-river="${r.id}">View conditions →</a>`);
+      mk.on("popupopen", (e) => {
+        const link = e.popup.getElement().querySelector("a[data-river]");
+        if (link) link.onclick = (ev) => { ev.preventDefault(); mainMap.closePopup(); openRiver(r.id); };
+      });
+    }
+    for (const t of state.trips.filter(t => t.lat != null)) {
+      const mk = L.marker([t.lat, t.lon], { icon: tripIcon }).addTo(mainMap);
+      mk.bindPopup(`<b>${t.riverName}</b><br/>${new Date(t.date).toLocaleDateString()}<br/><a href="#" data-trip="${t.id}">View trip →</a>`);
+      mk.on("popupopen", (e) => {
+        const link = e.popup.getElement().querySelector("a[data-trip]");
+        if (link) link.onclick = (ev) => { ev.preventDefault(); mainMap.closePopup(); openTrip(t.id); };
+      });
+    }
+  }, 50);
+}
+
+// ---------- quick session ----------
+
+function sessionElapsed(startedAt) {
+  const s = Math.floor((Date.now() - startedAt) / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  return `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+}
+
+function saveSessionState() {
+  if (!state.session) { localStorage.removeItem("flyfish_session"); return; }
+  const { startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather } = state.session;
+  localStorage.setItem("flyfish_session", JSON.stringify({ startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather }));
+}
+
+function loadSessionState() {
+  try {
+    const raw = localStorage.getItem("flyfish_session");
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function renderSessionUI() {
+  const fab    = $("#session-fab");
+  const banner = $("#session-banner");
+  if (!fab || !banner) return;
+
+  if (!state.session) {
+    fab.style.display = "";
+    fab.innerHTML = icon(ICONS.fish, 26);
+    banner.classList.remove("active");
+    document.body.classList.remove("session-on");
+    clearInterval(state._sessionTick);
+    return;
+  }
+
+  fab.style.display = "none";
+  banner.classList.add("active");
+  document.body.classList.add("session-on");
+  $("#s-river-name").textContent = state.session.riverName;
+  $("#s-fish-count").textContent = state.session.fishCount;
+
+  clearInterval(state._sessionTick);
+  const tick = () => {
+    const el = $("#s-timer-display");
+    if (el && state.session) el.textContent = sessionElapsed(state.session.startedAt);
+  };
+  tick();
+  state._sessionTick = setInterval(tick, 1000);
+
+  $("#s-plus-btn").onclick = () => bumpFish();
+  $("#s-end-btn").onclick  = () => endSessionSheet();
+}
+
+function bumpFish() {
+  if (!state.session) return;
+  state.session.fishCount++;
+  const countEl = $("#s-fish-count");
+  if (countEl) countEl.textContent = state.session.fishCount;
+  saveSessionState();
+  const btn = $("#s-plus-btn");
+  if (btn) { btn.style.transform = "scale(1.35)"; setTimeout(() => { btn.style.transform = ""; }, 120); }
+}
+
+function startSessionSheet() {
+  const body = el("div");
+  body.append(el("p", {
+    style: "color:var(--muted); font-size:14px; margin:0 0 14px;",
+    text: "Pick a river. Conditions snapshot automatically in the background.",
+  }));
+
+  const searchInput = el("input", { type: "search", placeholder: "Search rivers…", style: "margin-bottom:10px;" });
+  const listEl = el("div");
+
+  const renderPicker = (q) => {
+    listEl.innerHTML = "";
+    const lq = q.toLowerCase();
+    const filtered = state.rivers
+      .filter(r => !q || `${r.name} ${r.section||""} ${r.state}`.toLowerCase().includes(lq))
+      .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0))
+      .slice(0, 25);
+    for (const r of filtered) {
+      const row = el("button", {
+        style: "display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:11px 10px; border-radius:10px; background:var(--bg-2); border:1px solid var(--line); margin-bottom:6px;",
+        onclick: async () => { closeModal(); await beginSession(r); },
+      });
+      row.append(
+        el("div", { html: icon(ICONS.drop, 18), style: "color:var(--teal); flex-shrink:0;" }),
+        el("div", {}, [
+          el("div", { style: "font-weight:600; font-size:14px;", text: r.section ? `${r.name} — ${r.section}` : r.name }),
+          el("div", { style: "font-size:12px; color:var(--muted);", text: r.state }),
+        ])
+      );
+      listEl.append(row);
+    }
+  };
+
+  searchInput.addEventListener("input", (e) => renderPicker(e.target.value.trim()));
+  renderPicker("");
+  body.append(searchInput, listEl);
+  openModal(modalShell("Start Session", body));
+}
+
+async function beginSession(river) {
+  const startedAt = Date.now();
+  state.session = {
+    startedAt,
+    riverId: river.id,
+    riverName: river.section ? `${river.name} — ${river.section}` : river.name,
+    fishCount: 0,
+    lat: river.lat, lon: river.lon,
+    usgs: null, weather: null,
+    _timerId: null,
+  };
+  saveSessionState();
+  renderSessionUI();
+  toast(`Session started · ${state.session.riverName}`);
+
+  // Background conditions snapshot — doesn't block UI
+  (async () => {
+    let lat = river.lat, lon = river.lon;
+    try {
+      const pos = await new Promise((res, rej) =>
+        navigator.geolocation.getCurrentPosition(
+          p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
+          rej, { timeout: 8000, maximumAge: 600000 }
+        )
+      );
+      lat = pos.lat; lon = pos.lon;
+    } catch (_) {}
+    let usgs = null, weather = null;
+    try { usgs = await fetchUSGS(river.siteCode); } catch (_) {}
+    try { weather = await fetchWeather(lat, lon); } catch (_) {}
+    if (state.session && state.session.riverId === river.id) {
+      state.session.lat = lat; state.session.lon = lon;
+      state.session.usgs = usgs; state.session.weather = weather;
+      saveSessionState();
+    }
+  })();
+}
+
+function endSessionSheet() {
+  if (!state.session) return;
+  clearInterval(state._sessionTick);
+  const sess = state.session;
+  const duration = sessionElapsed(sess.startedAt);
+  const body = el("div");
+
+  // Summary
+  body.append(el("div", { class: "card" }, [
+    el("div", { class: "row" }, [el("span", { class: "label", text: "River" }),    el("span", { class: "value", text: sess.riverName })]),
+    el("div", { class: "row" }, [el("span", { class: "label", text: "Duration" }), el("span", { class: "value", text: duration })]),
+    el("div", { class: "row" }, [el("span", { class: "label", text: "Fish" }),     el("span", { class: "value", text: sess.fishCount })]),
+  ]));
+
+  // Adjust count
+  const countInput = el("input", { type: "number", min: 0, value: String(sess.fishCount),
+    oninput: (e) => { sess.fishCount = parseInt(e.target.value) || 0; } });
+  body.append(el("div", { class: "form-group" }, [
+    el("label", { text: "Adjust fish count" }), countInput,
+  ]));
+
+  // Biggest
+  const biggestInput = el("input", { type: "number", step: "0.5", placeholder: "e.g. 18" });
+  body.append(el("div", { class: "form-group" }, [
+    el("label", { text: "Biggest fish (inches, optional)" }), biggestInput,
+  ]));
+
+  // Flies — tappable chips
+  const selectedFlies = new Set();
+  const flyChipsEl = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
+  for (const f of state.flies) {
+    const chip = el("button", {
+      class: "chip",
+      text: f.name,
+      onclick: (e) => {
+        e.preventDefault();
+        if (selectedFlies.has(f.id)) { selectedFlies.delete(f.id); chip.classList.remove("active"); }
+        else { selectedFlies.add(f.id); chip.classList.add("active"); }
+      },
+    });
+    flyChipsEl.append(chip);
+  }
+  body.append(el("div", { class: "form-group" }, [
+    el("label", { text: "Flies used — tap to select" }),
+    flyChipsEl,
+  ]));
+
+  // Notes
+  const notesInput = el("textarea", { rows: 3, placeholder: "Hatches, tactics, water clarity…" });
+  body.append(el("div", { class: "form-group" }, [
+    el("label", { text: "Notes" }), notesInput,
+  ]));
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn secondary", text: "Keep fishing",
+      onclick: (e) => { e.preventDefault(); closeModal(); renderSessionUI(); },
+    }),
+    el("button", { class: "btn", text: "Save trip",
+      onclick: async (e) => {
+        e.preventDefault();
+        const fliesUsed = [...selectedFlies]
+          .map(id => state.flies.find(f => f.id === id)?.name)
+          .filter(Boolean).join(", ");
+        await finishSession({
+          fishCount: parseInt(countInput.value) || 0,
+          biggest: parseFloat(biggestInput.value) || null,
+          fliesUsed,
+          notes: notesInput.value.trim(),
+        });
+      },
+    }),
+  ]);
+
+  openModal(modalShell("End Session", body, footer));
+}
+
+async function finishSession(picks) {
+  if (!state.session) return;
+  const sess = state.session;
+  clearInterval(state._sessionTick);
+  const river = state.rivers.find(r => r.id === sess.riverId);
+
+  await dbPut(state.db, "trips", {
+    date: sess.startedAt,
+    riverId: sess.riverId,
+    riverName: sess.riverName,
+    locationLabel: "",
+    lat: sess.lat ?? river?.lat,
+    lon: sess.lon ?? river?.lon,
+    flowCFS:      sess.usgs?.flowCFS      ?? null,
+    waterTempF:   sess.usgs?.waterTempF   ?? null,
+    gaugeHeightFt:sess.usgs?.gaugeHeightFt?? null,
+    airTempF:     sess.weather?.airTempF  ?? null,
+    windMph:      sess.weather?.windMph   ?? null,
+    windDir:      sess.weather?.windDir   ?? null,
+    pressureHpa:  sess.weather?.pressureHpa?? null,
+    precipIn:     sess.weather?.precipIn  ?? null,
+    cloudPct:     sess.weather?.cloudPct  ?? null,
+    humidity:     sess.weather?.humidity  ?? null,
+    fliesUsed:    picks.fliesUsed,
+    leaderSetup:  "",
+    fishLanded:   picks.fishCount,
+    biggest:      picks.biggest,
+    notes:        picks.notes,
+    memoCount:    0,
+  });
+
+  state.session = null;
+  saveSessionState();
+  clearInterval(state._sessionTick);
+  renderSessionUI();
+  await reload();
+  renderTrips();
+  closeModal();
+  toast("Trip saved!");
+}
+
+// ---------- boot ----------
+
+(async function init() {
+  try {
+    state.db = await openDB();
+    await seedIfNeeded(state.db);
+    await reload();
+    renderRivers();
+
+    // Restore session that survived a page reload
+    const saved = loadSessionState();
+    if (saved) {
+      state.session = { ...saved, _timerId: null };
+    }
+    renderSessionUI();
+
+    $("#session-fab").addEventListener("click", () => startSessionSheet());
+  } catch (err) {
+    console.error(err);
+    document.body.innerHTML = `<div style="padding:20px;color:#d8525a">Failed to load: ${err.message}</div>`;
+  }
+})();
