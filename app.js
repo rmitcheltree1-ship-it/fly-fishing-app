@@ -202,6 +202,32 @@ async function fetchUSGS(siteCode) {
   return out;
 }
 
+function titleCase(str) {
+  return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()).replace(/,\s*$/, "");
+}
+
+async function searchUSGSSites(stateCd, nameQuery) {
+  const url = `https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=${encodeURIComponent(stateCd)}&siteType=ST&hasDataTypeCd=iv&siteName=${encodeURIComponent(nameQuery)}&siteNameMatchOperator=contains`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS ${r.status}`);
+  const text = await r.text();
+  const lines = text.split("\n");
+  const dataLines = lines.filter(l => !l.startsWith("#") && l.trim());
+  if (dataLines.length < 3) return [];
+  const headers = dataLines[0].split("\t");
+  const rows = dataLines.slice(2).filter(l => l.trim());
+  const idx = (name) => headers.indexOf(name);
+  return rows.map(line => {
+    const c = line.split("\t");
+    return {
+      siteCode: c[idx("site_no")]?.trim(),
+      name: titleCase(c[idx("station_nm")]?.trim() ?? ""),
+      lat: parseFloat(c[idx("dec_lat_va")]) || null,
+      lon: parseFloat(c[idx("dec_long_va")]) || null,
+    };
+  }).filter(s => s.siteCode && s.name && s.lat && s.lon);
+}
+
 async function lookupUSGSSite(siteCode) {
   const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&parameterCd=00060,00065,00010&siteStatus=all`;
   const r = await fetch(url);
@@ -374,8 +400,18 @@ function toast(msg) {
 function openModal(node) {
   const m = $("#modal");
   m.innerHTML = "";
+  m.append(el("div", { class: "modal-handle" }));
   m.append(node);
   $("#modal-bg").classList.add("open");
+
+  // Swipe down to dismiss
+  let startY = 0;
+  m.addEventListener("touchstart", (e) => { startY = e.touches[0].clientY; }, { passive: true, once: false });
+  m._swipeEnd = (e) => {
+    if (e.changedTouches[0].clientY - startY > 90) closeModal();
+  };
+  m.removeEventListener("touchend", m._swipeEnd);
+  m.addEventListener("touchend", m._swipeEnd, { passive: true });
 }
 function closeModal() {
   $("#modal-bg").classList.remove("open");
@@ -533,6 +569,21 @@ function renderRivers() {
   }
 
   renderRiverList();
+
+  // Background-refresh any starred river that has no CFS data yet
+  const needData = state.rivers.filter(r => r.favorite && r.lastCFS == null);
+  needData.forEach(r => {
+    fetchUSGS(r.siteCode).then(async usgs => {
+      if (!usgs?.flowCFS) return;
+      r.prevCFS = null;
+      r.lastCFS = usgs.flowCFS;
+      r.lastWaterTempF = usgs.waterTempF;
+      r.lastReadingAt = usgs.observedAt;
+      await dbPut(state.db, "rivers", r);
+      await reload();
+      renderRivers();
+    }).catch(() => {});
+  });
 }
 
 function renderRiverList() {
@@ -764,52 +815,95 @@ async function refreshRiverConditions(r, container) {
 }
 
 function addRiverModal(prefillName = "") {
-  const s = { name: prefillName, st: "", section: "", siteCode: "", lat: "", lon: "" };
+  const s = { name: prefillName, st: "CO", section: "", siteCode: "", lat: "", lon: "" };
 
-  const nameInput = el("input", { type: "text", placeholder: "e.g. South Platte River", value: s.name, oninput: (e) => s.name = e.target.value });
-  const stInput   = el("input", { type: "text", placeholder: "e.g. CO", oninput: (e) => s.st = e.target.value });
-  const secInput  = el("input", { type: "text", placeholder: "e.g. Wildcat Canyon", oninput: (e) => s.section = e.target.value });
-  const codeInput = el("input", { type: "text", placeholder: "e.g. 06700000", oninput: (e) => s.siteCode = e.target.value });
-  const latInput  = el("input", { type: "number", step: "any", placeholder: "39.162778", oninput: (e) => s.lat = e.target.value });
-  const lonInput  = el("input", { type: "number", step: "any", placeholder: "-105.309722", oninput: (e) => s.lon = e.target.value });
+  // ── Detail fields (shared between search-fill and manual) ──
+  const nameInput = el("input", { type: "text", placeholder: "e.g. Arkansas River", value: s.name,
+    oninput: (e) => s.name = e.target.value });
+  const secInput  = el("input", { type: "text", placeholder: "e.g. Parkdale",
+    oninput: (e) => s.section = e.target.value });
+  const codeInput = el("input", { type: "text", placeholder: "e.g. 07094500",
+    oninput: (e) => s.siteCode = e.target.value });
+  const latInput  = el("input", { type: "number", step: "any", placeholder: "38.5",
+    oninput: (e) => s.lat = e.target.value });
+  const lonInput  = el("input", { type: "number", step: "any", placeholder: "-105.4",
+    oninput: (e) => s.lon = e.target.value });
 
-  const lookupBtn = el("button", {
+  const fillFromResult = (result) => {
+    s.name = result.name; nameInput.value = result.name;
+    s.siteCode = result.siteCode; codeInput.value = result.siteCode;
+    s.lat = String(result.lat); latInput.value = result.lat;
+    s.lon = String(result.lon); lonInput.value = result.lon;
+    nameInput.focus();
+  };
+
+  // ── USGS name search ──
+  const stateSelect = el("select", { onchange: (e) => s.st = e.target.value });
+  for (const st of ["CO","MT","WY","ID","UT","NM","AZ","NV","OR","WA","CA"]) {
+    const o = el("option", { value: st, text: st });
+    if (st === s.st) o.selected = true;
+    stateSelect.append(o);
+  }
+  const searchQuery = el("input", { type: "search", placeholder: "e.g. Arkansas River",
+    value: prefillName, style: "flex:1;" });
+  const resultsEl = el("div");
+
+  const searchBtn = el("button", {
     class: "btn secondary",
-    style: "margin-top:8px;",
-    html: `${icon(ICONS.search, 16)} <span>Look up gauge info</span>`,
+    html: `${icon(ICONS.search, 16)} <span>Search</span>`,
+    style: "flex-shrink:0;",
     onclick: async (e) => {
       e.preventDefault();
-      if (!s.siteCode.trim()) { toast("Enter a site code first"); return; }
-      lookupBtn.disabled = true;
-      lookupBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Looking up…</span>`;
+      const q = searchQuery.value.trim();
+      if (!q) { toast("Enter a river name"); return; }
+      s.st = stateSelect.value;
+      searchBtn.disabled = true;
+      searchBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Searching…</span>`;
+      resultsEl.innerHTML = "";
       try {
-        const info = await lookupUSGSSite(s.siteCode.trim());
-        if (!s.name) { s.name = info.name; nameInput.value = info.name; }
-        s.lat = String(info.lat); latInput.value = info.lat;
-        s.lon = String(info.lon); lonInput.value = info.lon;
-        toast(`Found: ${info.name}`);
+        const results = await searchUSGSSites(s.st, q);
+        if (!results.length) {
+          resultsEl.append(el("div", { style: "padding:10px 12px; color:var(--muted); font-size:13px;",
+            text: "No gauges found — try a shorter name or different state." }));
+        } else {
+          const box = el("div", { class: "gauge-results" });
+          for (const r of results.slice(0, 15)) {
+            const row = el("button", { class: "gauge-result-row",
+              onclick: (e) => { e.preventDefault(); fillFromResult(r); resultsEl.innerHTML = ""; toast("Gauge selected — edit name/section then save"); }
+            });
+            row.append(
+              el("div", { class: "gauge-result-name", text: r.name }),
+              el("div", { class: "gauge-result-meta", text: `Site ${r.siteCode} · ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}` }),
+            );
+            box.append(row);
+          }
+          resultsEl.append(box);
+        }
       } catch (err) {
-        toast(`Not found — ${err.message}`);
+        toast("Search failed — " + err.message);
       } finally {
-        lookupBtn.disabled = false;
-        lookupBtn.innerHTML = `${icon(ICONS.search, 16)} <span>Look up gauge info</span>`;
+        searchBtn.disabled = false;
+        searchBtn.innerHTML = `${icon(ICONS.search, 16)} <span>Search</span>`;
       }
     },
   });
 
   const form = el("form");
   form.append(
+    // Search section
+    el("div", { class: "card", style: "margin-bottom:14px;" }, [
+      el("div", { style: "font-size:12px; color:var(--muted); margin-bottom:8px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;", text: "Find gauge by name" }),
+      el("div", { style: "display:flex; gap:8px; align-items:center;" }, [
+        stateSelect,
+        searchQuery,
+      ]),
+      el("div", { style: "margin-top:8px;" }, [searchBtn]),
+      resultsEl,
+    ]),
+    // Detail fields
     el("div", { class: "form-group" }, [el("label", { text: "River name" }), nameInput]),
-    el("div", { class: "form-row" }, [
-      el("div", { class: "form-group" }, [el("label", { text: "State" }), stInput]),
-      el("div", { class: "form-group" }, [el("label", { text: "Section (optional)" }), secInput]),
-    ]),
-    el("div", { class: "form-group" }, [
-      el("label", { text: "USGS site code" }),
-      codeInput,
-      el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Find at waterdata.usgs.gov — copy the 8–15 digit site number, then tap Look up." }),
-      lookupBtn,
-    ]),
+    el("div", { class: "form-group" }, [el("label", { text: "Section (optional)" }), secInput]),
+    el("div", { class: "form-group" }, [el("label", { text: "USGS site code" }), codeInput]),
     el("div", { class: "form-row" }, [
       el("div", { class: "form-group" }, [el("label", { text: "Latitude" }), latInput]),
       el("div", { class: "form-group" }, [el("label", { text: "Longitude" }), lonInput]),
@@ -817,12 +911,14 @@ function addRiverModal(prefillName = "") {
   );
 
   const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
-    el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); } }),
+    el("button", { class: "btn secondary", text: "Cancel",
+      onclick: (e) => { e.preventDefault(); closeModal(); } }),
     el("button", {
-      class: "btn", text: "Save",
+      class: "btn", text: "Save River",
       onclick: async (e) => {
         e.preventDefault();
-        if (!s.name || !s.siteCode) { toast("Name and site code required"); return; }
+        if (!s.name.trim()) { toast("River name required"); return; }
+        if (!s.siteCode.trim()) { toast("Site code required — search for a gauge first"); return; }
         await dbPut(state.db, "rivers", {
           name: s.name.trim(),
           state: s.st.trim().toUpperCase() || "—",
