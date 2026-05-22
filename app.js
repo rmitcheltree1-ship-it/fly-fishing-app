@@ -207,33 +207,36 @@ function titleCase(str) {
 }
 
 async function searchUSGSSites(stateCd, nameQuery) {
-  // Fetch all active streamflow gauges in the state via the IV endpoint (same one
-  // used for live conditions — known to be CORS-enabled and JSON-friendly).
-  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${encodeURIComponent(stateCd)}&parameterCd=00060&siteType=ST&siteStatus=active`;
+  // Site service returns compact RDB (tab-delimited) — ~50KB vs 2MB for the IV endpoint,
+  // which is what was timing out on mobile. Omit siteName param (it doesn't exist on this
+  // endpoint — that was causing the earlier 400). Fetch all sites, filter client-side.
+  const url = `https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=${encodeURIComponent(stateCd)}&siteType=ST&hasDataTypeCd=iv&siteStatus=active`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`USGS ${r.status}`);
-  const data = await r.json();
-  const series = data?.value?.timeSeries ?? [];
+  const text = await r.text();
 
-  // Deduplicate by site code (a site can appear multiple times if it has multiple sensors)
-  const seen = new Set();
-  const sites = [];
-  for (const s of series) {
-    const code = s.sourceInfo?.siteCode?.[0]?.value;
-    if (!code || seen.has(code)) continue;
-    seen.add(code);
-    const geo = s.sourceInfo?.geoLocation?.geogLocation;
-    if (!geo?.latitude || !geo?.longitude) continue;
-    sites.push({
-      siteCode: code,
-      name: titleCase(s.sourceInfo.siteName ?? ""),
-      lat: parseFloat(geo.latitude),
-      lon: parseFloat(geo.longitude),
-    });
-  }
+  // RDB: comment lines start with #, then header row, then format-descriptor row, then data
+  const dataLines = text.split("\n").filter(l => !l.startsWith("#") && l.trim());
+  if (dataLines.length < 3) return [];
+  const headers = dataLines[0].split("\t");
+  const rows = dataLines.slice(2).filter(l => l.trim());
+
+  const col = (name) => headers.indexOf(name);
+  const si = col("site_no"), ni = col("station_nm"), lati = col("dec_lat_va"), loni = col("dec_long_va");
+  if (si < 0 || ni < 0) throw new Error("unexpected USGS response format");
 
   const q = nameQuery.toLowerCase();
-  return sites.filter(s => s.name.toLowerCase().includes(q));
+  return rows
+    .map(line => {
+      const c = line.split("\t");
+      return {
+        siteCode: c[si]?.trim(),
+        name: titleCase(c[ni]?.trim() ?? ""),
+        lat: parseFloat(c[lati]) || null,
+        lon: parseFloat(c[loni]) || null,
+      };
+    })
+    .filter(s => s.siteCode && s.name && s.lat && s.lon && s.name.toLowerCase().includes(q));
 }
 
 async function lookupUSGSSite(siteCode) {
