@@ -207,25 +207,33 @@ function titleCase(str) {
 }
 
 async function searchUSGSSites(stateCd, nameQuery) {
-  const url = `https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=${encodeURIComponent(stateCd)}&siteType=ST&hasDataTypeCd=iv&siteName=${encodeURIComponent(nameQuery)}&siteNameMatchOperator=contains`;
+  // Fetch all active streamflow gauges in the state via the IV endpoint (same one
+  // used for live conditions — known to be CORS-enabled and JSON-friendly).
+  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${encodeURIComponent(stateCd)}&parameterCd=00060&siteType=ST&siteStatus=active`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`USGS ${r.status}`);
-  const text = await r.text();
-  const lines = text.split("\n");
-  const dataLines = lines.filter(l => !l.startsWith("#") && l.trim());
-  if (dataLines.length < 3) return [];
-  const headers = dataLines[0].split("\t");
-  const rows = dataLines.slice(2).filter(l => l.trim());
-  const idx = (name) => headers.indexOf(name);
-  return rows.map(line => {
-    const c = line.split("\t");
-    return {
-      siteCode: c[idx("site_no")]?.trim(),
-      name: titleCase(c[idx("station_nm")]?.trim() ?? ""),
-      lat: parseFloat(c[idx("dec_lat_va")]) || null,
-      lon: parseFloat(c[idx("dec_long_va")]) || null,
-    };
-  }).filter(s => s.siteCode && s.name && s.lat && s.lon);
+  const data = await r.json();
+  const series = data?.value?.timeSeries ?? [];
+
+  // Deduplicate by site code (a site can appear multiple times if it has multiple sensors)
+  const seen = new Set();
+  const sites = [];
+  for (const s of series) {
+    const code = s.sourceInfo?.siteCode?.[0]?.value;
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    const geo = s.sourceInfo?.geoLocation?.geogLocation;
+    if (!geo?.latitude || !geo?.longitude) continue;
+    sites.push({
+      siteCode: code,
+      name: titleCase(s.sourceInfo.siteName ?? ""),
+      lat: parseFloat(geo.latitude),
+      lon: parseFloat(geo.longitude),
+    });
+  }
+
+  const q = nameQuery.toLowerCase();
+  return sites.filter(s => s.name.toLowerCase().includes(q));
 }
 
 async function lookupUSGSSite(siteCode) {
@@ -838,14 +846,17 @@ function addRiverModal(prefillName = "") {
   };
 
   // ── USGS name search ──
-  const stateSelect = el("select", { onchange: (e) => s.st = e.target.value });
+  const stateSelect = el("select", {
+    style: "width:72px; flex-shrink:0; padding-left:8px; padding-right:4px;",
+    onchange: (e) => s.st = e.target.value,
+  });
   for (const st of ["CO","MT","WY","ID","UT","NM","AZ","NV","OR","WA","CA"]) {
     const o = el("option", { value: st, text: st });
     if (st === s.st) o.selected = true;
     stateSelect.append(o);
   }
   const searchQuery = el("input", { type: "search", placeholder: "e.g. Arkansas River",
-    value: prefillName, style: "flex:1;" });
+    value: prefillName, style: "flex:1; min-width:0;" });
   const resultsEl = el("div");
 
   const searchBtn = el("button", {
