@@ -15,6 +15,19 @@ const CARD_GRADIENTS = [
   ["#2a1e08", "#56401a"],  // amber
 ];
 
+// ---------- CO expansion rivers (migration v2) ----------
+// Added after initial release — applied to existing DBs automatically in seedIfNeeded.
+
+const CO_EXPANSION_RIVERS = [
+  { name: "South Platte River", state: "CO", section: "11 Mile Canyon",         siteCode: "06701000", lat: 38.9172, lon: -105.5714 },
+  { name: "South Platte River", state: "CO", section: "Dream Stream",            siteCode: "06695000", lat: 38.9950, lon: -105.7856 },
+  { name: "Arkansas River",     state: "CO", section: "Parkdale / Royal Gorge",  siteCode: "07094500", lat: 38.5085, lon: -105.3617 },
+  { name: "Arkansas River",     state: "CO", section: "Above Pueblo",            siteCode: "07096000", lat: 38.3378, lon: -104.6914 },
+  { name: "Cache la Poudre",    state: "CO", section: "Poudre Canyon",           siteCode: "06752000", lat: 40.6761, lon: -105.1619 },
+  { name: "Rio Grande",         state: "CO", section: "Wagon Wheel Gap",         siteCode: "08220000", lat: 37.7728, lon: -106.8058 },
+  { name: "Dolores River",      state: "CO", section: "Below McPhee Dam",        siteCode: "09168500", lat: 37.6044, lon: -108.5011 },
+];
+
 // ---------- seed data ----------
 
 const SEED_RIVERS = [
@@ -165,18 +178,33 @@ function dbDelete(db, store, id) {
 }
 
 async function seedIfNeeded(db) {
+  // Initial seed
   const seeded = await dbGet(db, "meta", 1);
-  if (seeded && seeded.value === true) return;
-  for (const r of SEED_RIVERS) {
-    await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+  if (!seeded) {
+    for (const r of SEED_RIVERS) {
+      await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+    }
+    for (const f of SEED_FLIES) {
+      await dbPut(db, "flies", { ...f, favorite: false, imageDataUrl: null });
+    }
+    for (const l of SEED_LEADERS) {
+      await dbPut(db, "leaders", l);
+    }
+    await dbPut(db, "meta", { id: 1, value: true });
   }
-  for (const f of SEED_FLIES) {
-    await dbPut(db, "flies", { ...f, favorite: false, imageDataUrl: null });
+
+  // Migration v2 — add CO expansion rivers to existing databases
+  const v2 = await dbGet(db, "meta", 2);
+  if (!v2) {
+    const existing = await dbGetAll(db, "rivers");
+    const existingSiteCodes = new Set(existing.map(r => r.siteCode));
+    for (const r of CO_EXPANSION_RIVERS) {
+      if (!existingSiteCodes.has(r.siteCode)) {
+        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+      }
+    }
+    await dbPut(db, "meta", { id: 2, value: true });
   }
-  for (const l of SEED_LEADERS) {
-    await dbPut(db, "leaders", l);
-  }
-  await dbPut(db, "meta", { id: 1, value: true });
 }
 
 // ---------- API calls ----------
@@ -415,14 +443,20 @@ function openModal(node) {
   m.append(node);
   $("#modal-bg").classList.add("open");
 
-  // Swipe down to dismiss
+  // Clean up any previous swipe listeners before adding new ones
+  if (m._swipeTouchStart) m.removeEventListener("touchstart", m._swipeTouchStart);
+  if (m._swipeTouchEnd)   m.removeEventListener("touchend",   m._swipeTouchEnd);
+
   let startY = 0;
-  m.addEventListener("touchstart", (e) => { startY = e.touches[0].clientY; }, { passive: true, once: false });
-  m._swipeEnd = (e) => {
-    if (e.changedTouches[0].clientY - startY > 90) closeModal();
+  m._swipeTouchStart = (e) => { startY = e.touches[0].clientY; };
+  // Only dismiss when the modal is scrolled to the top — prevents accidental
+  // close when the user is scrolling down through a long form
+  m._swipeTouchEnd = (e) => {
+    const dy = e.changedTouches[0].clientY - startY;
+    if (dy > 100 && m.scrollTop < 10) closeModal();
   };
-  m.removeEventListener("touchend", m._swipeEnd);
-  m.addEventListener("touchend", m._swipeEnd, { passive: true });
+  m.addEventListener("touchstart", m._swipeTouchStart, { passive: true });
+  m.addEventListener("touchend",   m._swipeTouchEnd,   { passive: true });
 }
 function closeModal() {
   $("#modal-bg").classList.remove("open");
