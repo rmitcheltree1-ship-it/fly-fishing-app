@@ -1,5 +1,5 @@
 // Simple offline cache: app shell + most-recently-fetched API responses.
-const CACHE = "flyfish-v1";
+const CACHE = "flyfish-v2";
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
@@ -18,6 +18,10 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
+  // Never cache Supabase (auth + sync API) — always go to network so data stays live.
+  if (url.hostname.endsWith("supabase.co") || url.hostname.endsWith("supabase.in")) {
+    return; // let the browser handle it normally
+  }
   // Stale-while-revalidate for shell + tiles + APIs
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);

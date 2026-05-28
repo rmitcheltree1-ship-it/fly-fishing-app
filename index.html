@@ -65,6 +65,26 @@
     header.appbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
     header.appbar .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
     header.appbar .actions { display: flex; gap: 8px; }
+    header.appbar .appbar-right { display: flex; align-items: center; gap: 8px; }
+    .account-btn {
+      width: 34px; height: 34px; flex: none;
+      border-radius: 50%;
+      border: 1.5px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+      cursor: pointer; padding: 0;
+      position: relative;
+    }
+    .account-btn.signed-in { border-color: var(--teal); background: var(--teal); color: #fff; }
+    .account-btn .sync-dot {
+      position: absolute; top: -1px; right: -1px;
+      width: 9px; height: 9px; border-radius: 50%;
+      border: 2px solid var(--bg); display: none;
+    }
+    .account-btn.sync-syncing .sync-dot { display: block; background: var(--gold); }
+    .account-btn.sync-error   .sync-dot { display: block; background: var(--red); }
     .icon-btn {
       background: var(--bg-2); border: 1px solid var(--line);
       border-radius: 10px; padding: 8px 10px; color: var(--fg);
@@ -442,7 +462,12 @@
     <h1 id="page-title">Rivers</h1>
     <div class="sub" id="page-sub">Western US · live conditions</div>
   </div>
-  <div class="actions" id="page-actions"></div>
+  <div class="appbar-right">
+    <div class="actions" id="page-actions"></div>
+    <button id="account-btn" class="account-btn" aria-label="Account & sync">
+      <span class="acct-glyph">○</span><span class="sync-dot"></span>
+    </button>
+  </div>
 </header>
 
 <main>
@@ -496,6 +521,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="app.js"></script>
 
 <script>

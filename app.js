@@ -120,6 +120,34 @@ const SEED_LEADERS = [
 
 const FLY_TYPES = ["Dry", "Nymph", "Streamer", "Emerger", "Terrestrial", "Wet"];
 
+// ---------- Supabase cloud sync config ----------
+// The anon key + project URL are designed to be public; security comes from
+// Row Level Security (each user only ever sees their own rows). Safe to ship.
+
+const SUPABASE_URL = "https://lauhleqlrzewxfdtxkyp.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdWhsZXFscnpld3hmZHR4a3lwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5OTgyOTQsImV4cCI6MjA5NTU3NDI5NH0.YH7mkcaab-iFTHFTz-z_0eRjEEFVe5kSx_UPsOax0M4";
+
+// Stores that mirror to the cloud. (memos + meta stay device-local.)
+const SYNCED_STORES = ["rivers", "trips", "flies", "leaders"];
+
+// Baseline timestamp stamped onto freshly-seeded default data, so that a genuine
+// cloud edit (always newer) wins over a default that a new device just re-seeded.
+const SEED_TS = Date.parse("2020-01-01T00:00:00Z");
+
+// uid helpers — a stable, cross-device string id. Local IndexedDB keeps its own
+// integer `id`; `uid` is what travels to the cloud and links records between devices.
+function slug(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+function randUid(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+// Deterministic uids for seed/default records so two devices that both seed the
+// defaults converge on the same id instead of duplicating them.
+function seedRiverUid(r)  { return `seed-r-${r.siteCode}-${slug(r.section)}`; }
+function seedFlyUid(f)    { return `seed-f-${slug(f.name)}`; }
+function seedLeaderUid(l) { return `seed-l-${slug(l.name)}`; }
+
 // ---------- IndexedDB ----------
 
 const DB_NAME = "flyfish-db";
@@ -163,6 +191,20 @@ function dbGet(db, store, id) {
 }
 
 function dbPut(db, store, value) {
+  if (SYNCED_STORES.includes(store)) {
+    // _fromSync marks writes that originate from a cloud pull — those must NOT
+    // re-stamp updatedAt (keep the remote timestamp) and must NOT push back up.
+    const fromSync = value._fromSync === true;
+    delete value._fromSync;
+    if (!value.uid) value.uid = randUid(store[0]);
+    if (value.deleted === undefined) value.deleted = false;
+    if (!fromSync) value.updatedAt = Date.now();
+    return new Promise((res, rej) => {
+      const r = tx(db, store, "readwrite").put(value);
+      r.onsuccess = () => { if (!fromSync) pushRecord(store, value); res(r.result); };
+      r.onerror = () => rej(r.error);
+    });
+  }
   return new Promise((res, rej) => {
     const r = tx(db, store, "readwrite").put(value);
     r.onsuccess = () => res(r.result);
@@ -183,13 +225,13 @@ async function seedIfNeeded(db) {
   const seeded = await dbGet(db, "meta", 1);
   if (!seeded) {
     for (const r of SEED_RIVERS) {
-      await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+      await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null, uid: seedRiverUid(r), updatedAt: SEED_TS, deleted: false, _fromSync: true });
     }
     for (const f of SEED_FLIES) {
-      await dbPut(db, "flies", { ...f, favorite: false, imageDataUrl: null });
+      await dbPut(db, "flies", { ...f, favorite: false, imageDataUrl: null, uid: seedFlyUid(f), updatedAt: SEED_TS, deleted: false, _fromSync: true });
     }
     for (const l of SEED_LEADERS) {
-      await dbPut(db, "leaders", l);
+      await dbPut(db, "leaders", { ...l, uid: seedLeaderUid(l), updatedAt: SEED_TS, deleted: false, _fromSync: true });
     }
     await dbPut(db, "meta", { id: 1, value: true });
   }
@@ -201,7 +243,7 @@ async function seedIfNeeded(db) {
     const existingSiteCodes = new Set(existing.map(r => r.siteCode));
     for (const r of CO_EXPANSION_RIVERS) {
       if (!existingSiteCodes.has(r.siteCode)) {
-        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null, uid: seedRiverUid(r), updatedAt: SEED_TS, deleted: false, _fromSync: true });
       }
     }
     await dbPut(db, "meta", { id: 2, value: true });
@@ -226,14 +268,14 @@ async function seedIfNeeded(db) {
         if (bySiteCode[code]) await dbDelete(db, "rivers", bySiteCode[code].id);
       } else if (bySiteCode[code]) {
         // Update coordinates in place
-        await dbPut(db, "rivers", { ...bySiteCode[code], lat: fix.lat, lon: fix.lon });
+        await dbPut(db, "rivers", { ...bySiteCode[code], lat: fix.lat, lon: fix.lon, _fromSync: true });
       }
     }
     // Add any new rivers not yet in DB
     const existingAfter = new Set((await dbGetAll(db, "rivers")).map(r => r.siteCode));
     for (const r of CO_EXPANSION_RIVERS) {
       if (newEntries.includes(r.siteCode) && !existingAfter.has(r.siteCode)) {
-        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null, uid: seedRiverUid(r), updatedAt: SEED_TS, deleted: false, _fromSync: true });
       }
     }
     await dbPut(db, "meta", { id: 3, value: true });
@@ -265,10 +307,61 @@ async function seedIfNeeded(db) {
           prevCFS:        null,
           lastWaterTempF: null,
           lastReadingAt:  null,
+          uid:            seedRiverUid({ siteCode: u.abbrev, section: u.section }),
+          updatedAt:      SEED_TS,
+          deleted:        false,
+          _fromSync:      true,
         });
       }
     }
     await dbPut(db, "meta", { id: 4, value: true });
+  }
+
+  // Migration v5 — backfill cloud-sync fields (uid, updatedAt, deleted) on every
+  // existing record, and stamp each trip with the uid of the river it references
+  // so trips stay linked to the right river across devices. Existing records get
+  // updatedAt = now so they are treated as the authoritative current state and
+  // push up to the (empty) cloud on first sign-in.
+  const v5 = await dbGet(db, "meta", 5);
+  if (!v5) {
+    const now = Date.now();
+
+    const rivers = await dbGetAll(db, "rivers");
+    for (const r of rivers) {
+      const patch = { ...r };
+      if (!patch.uid) patch.uid = patch.custom ? randUid("r") : seedRiverUid(patch);
+      patch.updatedAt = patch.updatedAt || now;
+      if (patch.deleted === undefined) patch.deleted = false;
+      await dbPut(db, "rivers", { ...patch, _fromSync: true });
+    }
+    for (const f of await dbGetAll(db, "flies")) {
+      const patch = { ...f };
+      if (!patch.uid) patch.uid = patch.custom ? randUid("f") : seedFlyUid(patch);
+      patch.updatedAt = patch.updatedAt || now;
+      if (patch.deleted === undefined) patch.deleted = false;
+      await dbPut(db, "flies", { ...patch, _fromSync: true });
+    }
+    for (const l of await dbGetAll(db, "leaders")) {
+      const patch = { ...l };
+      if (!patch.uid) patch.uid = seedLeaderUid(patch);
+      patch.updatedAt = patch.updatedAt || now;
+      if (patch.deleted === undefined) patch.deleted = false;
+      await dbPut(db, "leaders", { ...patch, _fromSync: true });
+    }
+
+    // Trips: assign uid + link to river by uid.
+    const riversNow = await dbGetAll(db, "rivers");
+    const idToUid = new Map(riversNow.map(r => [r.id, r.uid]));
+    for (const t of await dbGetAll(db, "trips")) {
+      const patch = { ...t };
+      if (!patch.uid) patch.uid = randUid("t");
+      if (!patch.riverUid && patch.riverId != null) patch.riverUid = idToUid.get(patch.riverId) || null;
+      patch.updatedAt = patch.updatedAt || now;
+      if (patch.deleted === undefined) patch.deleted = false;
+      await dbPut(db, "trips", { ...patch, _fromSync: true });
+    }
+
+    await dbPut(db, "meta", { id: 5, value: true });
   }
 }
 
@@ -449,10 +542,10 @@ const state = {
 };
 
 async function reload() {
-  state.rivers = await dbGetAll(state.db, "rivers");
-  state.trips = (await dbGetAll(state.db, "trips")).sort((a,b) => (b.date||0) - (a.date||0));
-  state.flies = await dbGetAll(state.db, "flies");
-  state.leaders = await dbGetAll(state.db, "leaders");
+  state.rivers = (await dbGetAll(state.db, "rivers")).filter(r => !r.deleted);
+  state.trips = (await dbGetAll(state.db, "trips")).filter(t => !t.deleted).sort((a,b) => (b.date||0) - (a.date||0));
+  state.flies = (await dbGetAll(state.db, "flies")).filter(f => !f.deleted);
+  state.leaders = (await dbGetAll(state.db, "leaders")).filter(l => !l.deleted);
 }
 
 // ---------- rendering ----------
@@ -849,7 +942,7 @@ async function openRiver(id) {
       const msg = `Delete ${r.name}${r.section ? " — " + r.section : ""}?` +
         (tripCount ? `\n\n${tripCount} trip(s) reference this river and will be kept.` : "");
       if (!confirm(msg)) return;
-      await dbDelete(state.db, "rivers", r.id);
+      await softDelete("rivers", r.id);
       await reload();
       renderRivers();
       closeModal();
@@ -1272,6 +1365,7 @@ async function newTripModal(prefRiver) {
         const tripId = await dbPut(state.db, "trips", {
           date: new Date(formState.date).getTime(),
           riverId: river.id,
+          riverUid: river.uid ?? null,
           riverName: river.section ? `${river.name} — ${river.section}` : river.name,
           locationLabel: formState.locationLabel,
           lat: formState.coords?.lat ?? river.lat,
@@ -1449,7 +1543,7 @@ async function openTrip(id) {
       e.preventDefault();
       if (!confirm("Delete this trip and its voice memos?")) return;
       for (const m of memos) await dbDelete(state.db, "memos", m.id);
-      await dbDelete(state.db, "trips", t.id);
+      await softDelete("trips", t.id);
       await reload();
       renderTrips();
       closeModal();
@@ -2001,6 +2095,7 @@ async function finishSession(picks) {
   await dbPut(state.db, "trips", {
     date: sess.startedAt,
     riverId: sess.riverId,
+    riverUid: river?.uid ?? null,
     riverName: sess.riverName,
     locationLabel: "",
     lat: sess.lat ?? river?.lat,
@@ -2034,6 +2129,333 @@ async function finishSession(picks) {
   toast("Trip saved!");
 }
 
+// ========================================================================
+//  Cloud sync + accounts (Supabase)
+// ========================================================================
+
+let supaClient = null;
+let currentUser = null;
+let lastSyncedAt = Number(localStorage.getItem("flyfish_last_sync")) || 0;
+let syncStatus = "idle"; // idle | syncing | ok | error
+
+// Map of remote (snake_case) column -> local (camelCase) field, per table.
+// id / user_id / updated_at / deleted are handled separately in the converters.
+const FIELD_MAP = {
+  rivers: {
+    name: "name", state: "state", section: "section", source: "source",
+    site_code: "siteCode", lat: "lat", lon: "lon",
+    favorite: "favorite", custom: "custom",
+    last_cfs: "lastCFS", prev_cfs: "prevCFS",
+    last_water_temp_f: "lastWaterTempF", last_reading_at: "lastReadingAt",
+    notes: "notes",
+  },
+  trips: {
+    date: "date", river_id: "riverUid", river_name: "riverName",
+    location_label: "locationLabel", lat: "lat", lon: "lon",
+    flow_cfs: "flowCFS", water_temp_f: "waterTempF", gauge_height_ft: "gaugeHeightFt",
+    air_temp_f: "airTempF", wind_mph: "windMph", wind_dir: "windDir",
+    pressure_hpa: "pressureHpa", precip_in: "precipIn", cloud_pct: "cloudPct",
+    humidity: "humidity", flies_used: "fliesUsed", leader_setup: "leaderSetup",
+    fish_landed: "fishLanded", biggest: "biggest", notes: "notes",
+    memo_count: "memoCount", data_source: "dataSource",
+  },
+  flies: {
+    name: "name", type: "type", sizes: "sizes", imitates: "imitates",
+    conditions: "conditions", notes: "notes", favorite: "favorite",
+    image_data_url: "imageDataUrl",
+  },
+  leaders: {
+    name: "name", situation: "situation", rod: "rod", length: "length",
+    taper: "taper", tippet: "tippet", diagram: "diagram", tips: "tips",
+  },
+};
+
+function toRemote(store, rec, userId) {
+  const map = FIELD_MAP[store];
+  const out = {
+    id: rec.uid,
+    user_id: userId,
+    updated_at: new Date(rec.updatedAt || Date.now()).toISOString(),
+    deleted: !!rec.deleted,
+  };
+  for (const [col, key] of Object.entries(map)) out[col] = rec[key] ?? null;
+  return out;
+}
+
+function fromRemote(store, row) {
+  const map = FIELD_MAP[store];
+  const out = {
+    uid: row.id,
+    updatedAt: row.updated_at ? Date.parse(row.updated_at) : Date.now(),
+    deleted: !!row.deleted,
+  };
+  for (const [col, key] of Object.entries(map)) out[key] = row[col] ?? null;
+  return out;
+}
+
+// ---- single-row push (debounced) — fired by dbPut on every local edit ----
+
+const pendingPush = new Map(); // uid -> { store, rec }
+let pushTimer = null;
+
+function pushRecord(store, rec) {
+  if (!currentUser || !supaClient || !SYNCED_STORES.includes(store) || !rec.uid) return;
+  pendingPush.set(rec.uid, { store, rec: { ...rec } });
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(flushPush, 700);
+}
+
+async function flushPush() {
+  if (!currentUser || !supaClient || !pendingPush.size) return;
+  const items = [...pendingPush.values()];
+  pendingPush.clear();
+  const byStore = {};
+  for (const { store, rec } of items) (byStore[store] ||= []).push(toRemote(store, rec, currentUser.id));
+  setSyncStatus("syncing");
+  let ok = true;
+  for (const [store, rows] of Object.entries(byStore)) {
+    try {
+      const { error } = await supaClient.from(store).upsert(rows);
+      if (error) { ok = false; console.warn("push failed", store, error); }
+    } catch (e) { ok = false; console.warn("push error", store, e); }
+  }
+  if (ok) { lastSyncedAt = Date.now(); localStorage.setItem("flyfish_last_sync", String(lastSyncedAt)); }
+  setSyncStatus(ok ? "ok" : "error");
+}
+
+// ---- soft delete (tombstone) so deletions propagate across devices ----
+
+async function softDelete(store, id) {
+  const rec = await dbGet(state.db, store, id);
+  if (!rec) return;
+  await dbPut(state.db, store, { ...rec, deleted: true }); // stamps updatedAt + pushes
+}
+
+// ---- full two-way sync (last-write-wins by updatedAt) ----
+
+async function syncStore(store) {
+  const userId = currentUser?.id;
+  if (!userId || !supaClient) return;
+
+  const { data: rows, error } = await supaClient.from(store).select("*");
+  if (error) throw error;
+
+  const local = await dbGetAll(state.db, store);
+  const localByUid = new Map(local.filter(r => r.uid).map(r => [r.uid, r]));
+  const remoteByUid = new Map((rows || []).map(r => [r.id, r]));
+
+  // Pull: apply remote rows that are new or newer than local.
+  for (const row of (rows || [])) {
+    const rem = fromRemote(store, row);
+    const loc = localByUid.get(rem.uid);
+    if (!loc) {
+      await dbPut(state.db, store, { ...rem, _fromSync: true });
+    } else if ((rem.updatedAt || 0) > (loc.updatedAt || 0)) {
+      await dbPut(state.db, store, { ...loc, ...rem, id: loc.id, _fromSync: true });
+    }
+  }
+
+  // Push: send local rows that are missing remotely or newer than remote.
+  const toPush = [];
+  for (const loc of local) {
+    if (!loc.uid) continue;
+    const row = remoteByUid.get(loc.uid);
+    const remoteTs = row?.updated_at ? Date.parse(row.updated_at) : 0;
+    if (!row || (loc.updatedAt || 0) > remoteTs) toPush.push(toRemote(store, loc, userId));
+  }
+  if (toPush.length) {
+    const { error: upErr } = await supaClient.from(store).upsert(toPush);
+    if (upErr) throw upErr;
+  }
+}
+
+// After syncing, re-point each local trip's integer riverId at the local river
+// that carries its riverUid (ids differ per device; uids are stable).
+async function relinkTripRivers() {
+  const rivers = await dbGetAll(state.db, "rivers");
+  const byUid = new Map(rivers.filter(r => r.uid).map(r => [r.uid, r.id]));
+  for (const t of await dbGetAll(state.db, "trips")) {
+    if (t.riverUid && byUid.has(t.riverUid) && t.riverId !== byUid.get(t.riverUid)) {
+      await dbPut(state.db, "trips", { ...t, riverId: byUid.get(t.riverUid), _fromSync: true });
+    }
+  }
+}
+
+let syncing = false;
+async function fullSync() {
+  if (!currentUser || !supaClient || syncing) return;
+  syncing = true;
+  setSyncStatus("syncing");
+  try {
+    await syncStore("rivers");
+    await syncStore("flies");
+    await syncStore("leaders");
+    await syncStore("trips");
+    await relinkTripRivers();
+    await reload();
+    rerenderCurrent();
+    lastSyncedAt = Date.now();
+    localStorage.setItem("flyfish_last_sync", String(lastSyncedAt));
+    setSyncStatus("ok");
+  } catch (err) {
+    console.error("sync failed", err);
+    setSyncStatus("error");
+    toast("Sync failed — will retry");
+  } finally {
+    syncing = false;
+  }
+}
+
+function rerenderCurrent() {
+  if (state.tab === "rivers") renderRivers();
+  else if (state.tab === "trips") renderTrips();
+  else if (state.tab === "flies") renderFlies();
+  else if (state.tab === "leaders") renderLeaders();
+  else if (state.tab === "map") renderMap();
+}
+
+// ---- account button + status ----
+
+function setSyncStatus(s) {
+  syncStatus = s;
+  const btn = $("#account-btn");
+  if (!btn) return;
+  btn.classList.toggle("sync-syncing", s === "syncing");
+  btn.classList.toggle("sync-error", s === "error");
+}
+
+function updateAccountButton() {
+  const btn = $("#account-btn");
+  if (!btn) return;
+  const glyph = btn.querySelector(".acct-glyph");
+  if (currentUser) {
+    btn.classList.add("signed-in");
+    const email = currentUser.email || "";
+    if (glyph) glyph.textContent = (email[0] || "•").toUpperCase();
+  } else {
+    btn.classList.remove("signed-in");
+    if (glyph) glyph.textContent = "○";
+  }
+}
+
+function fmtLastSynced() {
+  if (!lastSyncedAt) return "never";
+  const mins = Math.round((Date.now() - lastSyncedAt) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  return new Date(lastSyncedAt).toLocaleDateString();
+}
+
+function openAccountSheet() {
+  const body = el("div");
+
+  if (!supaClient) {
+    body.append(el("div", { class: "card" }, [
+      el("div", { style: "color:var(--muted)", text: "Cloud sync is unavailable — couldn't reach the sync library. Your data is still saved on this device." }),
+    ]));
+    openModal(modalShell("Account", body));
+    return;
+  }
+
+  if (currentUser) {
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row" }, [el("span", { class: "label", text: "Signed in" }), el("span", { class: "value", text: currentUser.email || "—" })]),
+      el("div", { class: "row" }, [el("span", { class: "label", text: "Last synced" }), el("span", { class: "value", text: fmtLastSynced() })]),
+    ]));
+    body.append(el("button", {
+      class: "btn", style: "margin-top:8px;",
+      html: `${icon(ICONS.refresh, 18)} <span>Sync now</span>`,
+      onclick: async (e) => { e.preventDefault(); await fullSync(); toast("Synced"); closeModal(); openAccountSheet(); },
+    }));
+    body.append(el("button", {
+      class: "btn secondary", style: "margin-top:8px;", text: "Sign out",
+      onclick: async (e) => {
+        e.preventDefault();
+        await supaClient.auth.signOut();
+        closeModal();
+      },
+    }));
+    openModal(modalShell("Account", body));
+    return;
+  }
+
+  // Logged out — magic link sign-in.
+  body.append(el("div", { class: "card" }, [
+    el("div", { style: "color:var(--muted); line-height:1.5;", text: "Sign in to back up your rivers, trips, flies, and leaders to the cloud and sync them across your devices. We'll email you a one-tap sign-in link — no password." }),
+  ]));
+  const emailInput = el("input", { type: "email", placeholder: "you@example.com", autocomplete: "email", inputmode: "email" });
+  body.append(el("div", { class: "form-group" }, [el("label", { text: "Email" }), emailInput]));
+
+  const sendBtn = el("button", {
+    class: "btn", style: "margin-top:8px;", text: "Send magic link",
+    onclick: async (e) => {
+      e.preventDefault();
+      const email = emailInput.value.trim();
+      if (!email || !email.includes("@")) { toast("Enter a valid email"); return; }
+      sendBtn.disabled = true;
+      sendBtn.textContent = "Sending…";
+      try {
+        const { error } = await supaClient.auth.signInWithOtp({
+          email,
+          options: { emailRedirectTo: window.location.origin },
+        });
+        if (error) throw error;
+        body.innerHTML = "";
+        body.append(el("div", { class: "card" }, [
+          el("h3", { text: "Check your email" }),
+          el("div", { style: "color:var(--muted); line-height:1.5;", text: `We sent a sign-in link to ${email}. Open it on this device to finish signing in.` }),
+        ]));
+      } catch (err) {
+        console.error(err);
+        sendBtn.disabled = false;
+        sendBtn.textContent = "Send magic link";
+        toast("Couldn't send link — try again");
+      }
+    },
+  });
+  body.append(sendBtn);
+
+  openModal(modalShell("Sign in", body));
+}
+
+async function initAuth() {
+  const btn = $("#account-btn");
+  if (btn) btn.addEventListener("click", () => openAccountSheet());
+
+  if (!window.supabase) { console.warn("Supabase library not loaded"); return; }
+  supaClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  });
+
+  try {
+    const { data: { session } } = await supaClient.auth.getSession();
+    currentUser = session?.user ?? null;
+  } catch (e) { console.warn("getSession failed", e); }
+  updateAccountButton();
+
+  supaClient.auth.onAuthStateChange((event, session) => {
+    const wasUser = currentUser?.id;
+    currentUser = session?.user ?? null;
+    updateAccountButton();
+    if (event === "SIGNED_IN" && currentUser && currentUser.id !== wasUser) {
+      toast("Signed in — syncing");
+      fullSync();
+    } else if (event === "SIGNED_OUT") {
+      toast("Signed out");
+      setSyncStatus("idle");
+    }
+  });
+
+  if (currentUser) fullSync();
+
+  // Re-sync when the app comes back to the foreground.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentUser) fullSync();
+  });
+}
+
 // ---------- boot ----------
 
 (async function init() {
@@ -2051,6 +2473,9 @@ async function finishSession(picks) {
     renderSessionUI();
 
     $("#session-fab").addEventListener("click", () => startSessionSheet());
+
+    // Cloud accounts + sync — additive layer; the app works fully offline without it.
+    initAuth();
   } catch (err) {
     console.error(err);
     document.body.innerHTML = `<div style="padding:20px;color:#d8525a">Failed to load: ${err.message}</div>`;
