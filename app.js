@@ -238,6 +238,38 @@ async function seedIfNeeded(db) {
     }
     await dbPut(db, "meta", { id: 3, value: true });
   }
+
+  // Migration v4 — switch 11 Mile Canyon + Dream Stream from USGS to CO DWR source.
+  // DWR stations (PLAGEOCO, PLAHARCO) are the authoritative gauges for these sections.
+  const v4 = await dbGet(db, "meta", 4);
+  if (!v4) {
+    const all = await dbGetAll(db, "rivers");
+    const bySiteCode = {};
+    for (const r of all) bySiteCode[r.siteCode] = r;
+
+    const dwrSwitches = [
+      { oldCode: "06701000", abbrev: "PLAGEOCO", lat: 38.905278, lon: -105.473338, name: "South Platte River", section: "11 Mile Canyon" },
+      { oldCode: "06695500", abbrev: "PLAHARCO", lat: 38.967805, lon: -105.581544, name: "South Platte River", section: "Dream Stream"   },
+    ];
+    for (const u of dwrSwitches) {
+      if (bySiteCode[u.oldCode]) {
+        await dbPut(db, "rivers", {
+          ...bySiteCode[u.oldCode],
+          name:           u.name,
+          section:        u.section,
+          siteCode:       u.abbrev,
+          source:         "dwr",
+          lat:            u.lat,
+          lon:            u.lon,
+          lastCFS:        null,
+          prevCFS:        null,
+          lastWaterTempF: null,
+          lastReadingAt:  null,
+        });
+      }
+    }
+    await dbPut(db, "meta", { id: 4, value: true });
+  }
 }
 
 // ---------- API calls ----------
@@ -261,6 +293,24 @@ async function fetchUSGS(siteCode) {
     if (!out.observedAt) out.observedAt = latest.dateTime;
   }
   return out;
+}
+
+async function fetchDWR(abbrev) {
+  // Colorado DWR telemetry station — returns current reading + stage
+  // The station endpoint includes the most-recent measValue inline, so one call is enough.
+  const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrystation/?format=json&abbrev=${encodeURIComponent(abbrev)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`DWR ${r.status}`);
+  const data = await r.json();
+  const s = data.ResultList?.[0];
+  if (!s) throw new Error("DWR station not found");
+  const flow = s.measValue != null ? parseFloat(s.measValue) : null;
+  return {
+    flowCFS:       (isFinite(flow) && flow >= 0) ? flow : null,
+    waterTempF:    null,                                          // available via TMPRT param — future
+    gaugeHeightFt: s.stage != null ? parseFloat(s.stage) : null,
+    observedAt:    s.measDateTime ?? null,
+  };
 }
 
 function titleCase(str) {
@@ -298,6 +348,27 @@ async function searchUSGSSites(stateCd, nameQuery) {
       };
     })
     .filter(s => s.siteCode && s.name && s.lat && s.lon && s.name.toLowerCase().includes(q));
+}
+
+async function searchDWRStations(query) {
+  // Fetch all active CO DWR stream gages and filter client-side.
+  // (~200-400 stations, small JSON — fine on mobile.)
+  const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrystation/?format=json&stationStatus=Active&stationType=Stream%20Gage`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`DWR ${r.status}`);
+  const data = await r.json();
+  const q = query.toLowerCase();
+  return (data.ResultList ?? [])
+    .filter(s => s.latitude && s.longitude && s.stationName?.toLowerCase().includes(q))
+    .map(s => ({
+      siteCode: s.abbrev,     // unified interface — abbrev acts as siteCode for DWR rivers
+      abbrev:   s.abbrev,
+      name:     titleCase(s.stationName),
+      lat:      s.latitude,
+      lon:      s.longitude,
+      source:   "dwr",
+    }))
+    .slice(0, 20);
 }
 
 async function lookupUSGSSite(siteCode) {
@@ -651,7 +722,8 @@ function renderRivers() {
   // Background-refresh any starred river that has no CFS data yet
   const needData = state.rivers.filter(r => r.favorite && r.lastCFS == null);
   needData.forEach(r => {
-    fetchUSGS(r.siteCode).then(async usgs => {
+    const fetcher = r.source === "dwr" ? fetchDWR(r.siteCode) : fetchUSGS(r.siteCode);
+    fetcher.then(async usgs => {
       if (!usgs?.flowCFS) return;
       r.prevCFS = null;
       r.lastCFS = usgs.flowCFS;
@@ -744,7 +816,7 @@ async function openRiver(id) {
 
   const sub = el("div", {
     style: "color:var(--muted); font-size:13px; margin-bottom:10px;",
-    text: `${r.state}${r.section ? " · " + r.section : ""} · USGS ${r.siteCode}`,
+    text: `${r.state}${r.section ? " · " + r.section : ""} · ${r.source === "dwr" ? "DWR" : "USGS"} ${r.siteCode}`,
   });
   body.append(sub);
 
@@ -836,7 +908,7 @@ function metric(label, value, unit, ic, color) {
   ]);
 }
 
-function buildConditionsGrid(u, w) {
+function buildConditionsGrid(u, w, source = "usgs") {
   const f = (n, d = 0) => (n == null || !isFinite(n)) ? "—" : (d === 0 ? Math.round(n).toString() : n.toFixed(d));
 
   const usgsGrid = el("div", { class: "metrics-grid" }, [
@@ -857,7 +929,7 @@ function buildConditionsGrid(u, w) {
   const wrap = el("div");
   wrap.append(
     el("div", { class: "cond-header" }, [
-      el("span", { class: "cond-src", text: "USGS · River" }),
+      el("span", { class: "cond-src", text: source === "dwr" ? "CO DWR · River" : "USGS · River" }),
       u?.observedAt ? el("span", { class: "cond-time", text: fmtTime(u.observedAt) }) : null,
     ]),
     usgsGrid,
@@ -872,11 +944,14 @@ function buildConditionsGrid(u, w) {
 
 async function refreshRiverConditions(r, container) {
   let usgs = null, weather = null, errs = [];
-  try { usgs = await fetchUSGS(r.siteCode); } catch (e) { errs.push("USGS: " + e.message); }
+  const isDWR = r.source === "dwr";
+  try {
+    usgs = isDWR ? await fetchDWR(r.siteCode) : await fetchUSGS(r.siteCode);
+  } catch (e) { errs.push((isDWR ? "DWR" : "USGS") + ": " + e.message); }
   try { weather = await fetchWeather(r.lat, r.lon); } catch (e) { errs.push("Weather: " + e.message); }
 
   container.innerHTML = "";
-  container.append(buildConditionsGrid(usgs, weather));
+  container.append(buildConditionsGrid(usgs, weather, r.source));
   if (errs.length) {
     container.append(el("div", { style: "color:var(--red); font-size:12px; margin-top:8px;", text: errs.join(" · ") }));
   }
@@ -893,7 +968,7 @@ async function refreshRiverConditions(r, container) {
 }
 
 function addRiverModal(prefillName = "") {
-  const s = { name: prefillName, st: "CO", section: "", siteCode: "", lat: "", lon: "" };
+  const s = { name: prefillName, st: "CO", section: "", siteCode: "", lat: "", lon: "", source: "usgs" };
 
   // ── Detail fields (shared between search-fill and manual) ──
   const nameInput = el("input", { type: "text", placeholder: "e.g. Arkansas River", value: s.name,
@@ -912,6 +987,7 @@ function addRiverModal(prefillName = "") {
     s.siteCode = result.siteCode; codeInput.value = result.siteCode;
     s.lat = String(result.lat); latInput.value = result.lat;
     s.lon = String(result.lon); lonInput.value = result.lon;
+    s.source = result.source || "usgs";
     nameInput.focus();
   };
 
@@ -942,19 +1018,31 @@ function addRiverModal(prefillName = "") {
       searchBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Searching…</span>`;
       resultsEl.innerHTML = "";
       try {
-        const results = await searchUSGSSites(s.st, q);
-        if (!results.length) {
+        // Search USGS always; for CO also search DWR in parallel
+        const tasks = [searchUSGSSites(s.st, q).catch(() => [])];
+        if (s.st === "CO") tasks.push(searchDWRStations(q).catch(() => []));
+        const [usgsResults, dwrResults = []] = await Promise.all(tasks);
+        // DWR first for CO — they're the authoritative source for CO rivers
+        const combined = [
+          ...dwrResults,
+          ...usgsResults.map(r => ({ ...r, source: "usgs" })),
+        ];
+        if (!combined.length) {
           resultsEl.append(el("div", { style: "padding:10px 12px; color:var(--muted); font-size:13px;",
             text: "No gauges found — try a shorter name or different state." }));
         } else {
           const box = el("div", { class: "gauge-results" });
-          for (const r of results.slice(0, 15)) {
+          for (const res of combined.slice(0, 20)) {
+            const isDWR = res.source === "dwr";
             const row = el("button", { class: "gauge-result-row",
-              onclick: (e) => { e.preventDefault(); fillFromResult(r); resultsEl.innerHTML = ""; toast("Gauge selected — edit name/section then save"); }
+              onclick: (ev) => { ev.preventDefault(); fillFromResult(res); resultsEl.innerHTML = ""; toast("Gauge selected — edit name/section then save"); }
             });
             row.append(
-              el("div", { class: "gauge-result-name", text: r.name }),
-              el("div", { class: "gauge-result-meta", text: `Site ${r.siteCode} · ${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}` }),
+              el("div", { class: "gauge-result-name" }, [
+                el("span", { class: `gauge-src-badge ${isDWR ? "dwr" : "usgs"}`, text: isDWR ? "DWR" : "USGS" }),
+                document.createTextNode(" " + res.name),
+              ]),
+              el("div", { class: "gauge-result-meta", text: `${res.siteCode} · ${res.lat?.toFixed(4)}, ${res.lon?.toFixed(4)}` }),
             );
             box.append(row);
           }
@@ -984,7 +1072,7 @@ function addRiverModal(prefillName = "") {
     // Detail fields
     el("div", { class: "form-group" }, [el("label", { text: "River name" }), nameInput]),
     el("div", { class: "form-group" }, [el("label", { text: "Section (optional)" }), secInput]),
-    el("div", { class: "form-group" }, [el("label", { text: "USGS site code" }), codeInput]),
+    el("div", { class: "form-group" }, [el("label", { text: "Gauge / site code" }), codeInput]),
     el("div", { class: "form-row" }, [
       el("div", { class: "form-group" }, [el("label", { text: "Latitude" }), latInput]),
       el("div", { class: "form-group" }, [el("label", { text: "Longitude" }), lonInput]),
@@ -999,12 +1087,13 @@ function addRiverModal(prefillName = "") {
       onclick: async (e) => {
         e.preventDefault();
         if (!s.name.trim()) { toast("River name required"); return; }
-        if (!s.siteCode.trim()) { toast("Site code required — search for a gauge first"); return; }
+        if (!s.siteCode.trim()) { toast("Gauge code required — search for a gauge first"); return; }
         await dbPut(state.db, "rivers", {
           name: s.name.trim(),
           state: s.st.trim().toUpperCase() || "—",
           section: s.section.trim(),
           siteCode: s.siteCode.trim(),
+          source: s.source || "usgs",
           lat: parseFloat(s.lat) || 0,
           lon: parseFloat(s.lon) || 0,
           favorite: false, custom: true,
@@ -1072,6 +1161,7 @@ async function newTripModal(prefRiver) {
     usgs: null,
     weather: null,
     coords: null,
+    dataSource: "usgs",
     pendingMemos: [], // { blob, mime, duration, label, name }
   };
 
@@ -1120,10 +1210,11 @@ async function newTripModal(prefRiver) {
           );
         });
       } catch (_) { formState.coords = { lat: river.lat, lon: river.lon }; }
-      try { formState.usgs = await fetchUSGS(river.siteCode); } catch (_) {}
+      try { formState.usgs = river.source === "dwr" ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
       try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
+      formState.dataSource = river.source || "usgs";
       condCard.innerHTML = "";
-      condCard.append(buildConditionsGrid(formState.usgs, formState.weather));
+      condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource));
       snapBtn.disabled = false;
     }
   });
@@ -1201,6 +1292,7 @@ async function newTripModal(prefRiver) {
           biggest: parseFloat(formState.biggest) || null,
           notes: formState.notes,
           memoCount: formState.pendingMemos.length,
+          dataSource: formState.dataSource || "usgs",
         });
         for (const m of formState.pendingMemos) {
           await dbPut(state.db, "memos", { tripId, blob: m.blob, mime: m.mime, duration: m.duration, label: m.label, createdAt: Date.now() });
@@ -1321,6 +1413,7 @@ async function openTrip(id) {
     buildConditionsGrid(
       { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt },
       { airTempF: t.airTempF, windMph: t.windMph, windDir: t.windDir, pressureHpa: t.pressureHpa, precipIn: t.precipIn, cloudPct: t.cloudPct, humidity: t.humidity },
+      t.dataSource,
     ),
   ]);
   body.append(condCard);
@@ -1813,7 +1906,7 @@ async function beginSession(river) {
       lat = pos.lat; lon = pos.lon;
     } catch (_) {}
     let usgs = null, weather = null;
-    try { usgs = await fetchUSGS(river.siteCode); } catch (_) {}
+    try { usgs = river.source === "dwr" ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
     try { weather = await fetchWeather(lat, lon); } catch (_) {}
     if (state.session && state.session.riverId === river.id) {
       state.session.lat = lat; state.session.lon = lon;
@@ -1928,6 +2021,7 @@ async function finishSession(picks) {
     biggest:      picks.biggest,
     notes:        picks.notes,
     memoCount:    0,
+    dataSource:   river?.source || "usgs",
   });
 
   state.session = null;
