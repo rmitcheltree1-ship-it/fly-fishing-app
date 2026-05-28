@@ -2286,24 +2286,29 @@ async function fullSync() {
   if (!currentUser || !supaClient || syncing) return;
   syncing = true;
   setSyncStatus("syncing");
+  let ok = true;
   try {
     await syncStore("rivers");
     await syncStore("flies");
     await syncStore("leaders");
     await syncStore("trips");
     await relinkTripRivers();
-    await reload();
-    rerenderCurrent();
+  } catch (err) {
+    ok = false;
+    console.error("sync failed", err);
+  }
+  // Always refresh the UI from local data — even on a sync error the screen
+  // must never be left blank.
+  try { await reload(); rerenderCurrent(); } catch (e) { console.error("rerender failed", e); }
+  if (ok) {
     lastSyncedAt = Date.now();
     localStorage.setItem("flyfish_last_sync", String(lastSyncedAt));
     setSyncStatus("ok");
-  } catch (err) {
-    console.error("sync failed", err);
+  } else {
     setSyncStatus("error");
-    toast("Sync failed — will retry");
-  } finally {
-    syncing = false;
+    toast("Sync failed — your data is safe on this device");
   }
+  syncing = false;
 }
 
 function rerenderCurrent() {
@@ -2381,43 +2386,80 @@ function openAccountSheet() {
     return;
   }
 
-  // Logged out — magic link sign-in.
+  // Logged out — email + password sign-in / sign-up.
   body.append(el("div", { class: "card" }, [
-    el("div", { style: "color:var(--muted); line-height:1.5;", text: "Sign in to back up your rivers, trips, flies, and leaders to the cloud and sync them across your devices. We'll email you a one-tap sign-in link — no password." }),
+    el("div", { style: "color:var(--muted); line-height:1.5;", text: "Sign in to back up your rivers, trips, flies, and leaders and sync them across devices. First time? Pick a password and tap Create account." }),
   ]));
+
   const emailInput = el("input", { type: "email", placeholder: "you@example.com", autocomplete: "email", inputmode: "email" });
-  body.append(el("div", { class: "form-group" }, [el("label", { text: "Email" }), emailInput]));
+  const passInput  = el("input", { type: "password", placeholder: "Password (min 6 chars)", autocomplete: "current-password" });
+  body.append(
+    el("div", { class: "form-group" }, [el("label", { text: "Email" }), emailInput]),
+    el("div", { class: "form-group" }, [el("label", { text: "Password" }), passInput]),
+  );
 
-  const sendBtn = el("button", {
-    class: "btn", style: "margin-top:8px;", text: "Send magic link",
-    onclick: async (e) => {
-      e.preventDefault();
-      const email = emailInput.value.trim();
-      if (!email || !email.includes("@")) { toast("Enter a valid email"); return; }
-      sendBtn.disabled = true;
-      sendBtn.textContent = "Sending…";
-      try {
-        const { error } = await supaClient.auth.signInWithOtp({
-          email,
-          options: { emailRedirectTo: window.location.origin },
-        });
-        if (error) throw error;
-        body.innerHTML = "";
-        body.append(el("div", { class: "card" }, [
-          el("h3", { text: "Check your email" }),
-          el("div", { style: "color:var(--muted); line-height:1.5;", text: `We sent a sign-in link to ${email}. Open it on this device to finish signing in.` }),
-        ]));
-      } catch (err) {
-        console.error(err);
-        sendBtn.disabled = false;
-        sendBtn.textContent = "Send magic link";
-        toast("Couldn't send link — try again");
+  const msg = el("div", { style: "color:var(--red); font-size:13px; margin:4px 0; min-height:16px;" });
+  body.append(msg);
+
+  const signInBtn = el("button", { class: "btn", style: "margin-top:4px;", text: "Sign in" });
+  const signUpBtn = el("button", { class: "btn secondary", style: "margin-top:8px;", text: "Create account" });
+
+  function creds() {
+    const email = emailInput.value.trim();
+    const password = passInput.value;
+    if (!email || !email.includes("@")) { msg.textContent = "Enter a valid email."; return null; }
+    if (!password || password.length < 6) { msg.textContent = "Password must be at least 6 characters."; return null; }
+    return { email, password };
+  }
+  function busy(b, label) {
+    signInBtn.disabled = signUpBtn.disabled = b;
+    if (b) msg.textContent = "";
+  }
+
+  signInBtn.onclick = async (e) => {
+    e.preventDefault();
+    const c = creds(); if (!c) return;
+    busy(true);
+    try {
+      const { error } = await supaClient.auth.signInWithPassword(c);
+      if (error) throw error;
+      closeModal(); // SIGNED_IN handler runs fullSync
+    } catch (err) {
+      console.error(err);
+      busy(false);
+      msg.textContent = /invalid login/i.test(err.message || "")
+        ? "Wrong email or password. New here? Tap Create account."
+        : (err.message || "Sign-in failed.");
+    }
+  };
+
+  signUpBtn.onclick = async (e) => {
+    e.preventDefault();
+    const c = creds(); if (!c) return;
+    busy(true);
+    try {
+      const { data, error } = await supaClient.auth.signUp(c);
+      if (error) throw error;
+      if (data.session) {
+        closeModal(); // signed in immediately (email confirmation off)
+      } else {
+        // Email confirmation is ON in Supabase — sign-in won't work until confirmed.
+        msg.style.color = "var(--muted)";
+        msg.textContent = "Account created. Check your email to confirm, then Sign in. (Tip: disable 'Confirm email' in Supabase Auth settings to skip this.)";
+        busy(false);
       }
-    },
-  });
-  body.append(sendBtn);
+    } catch (err) {
+      console.error(err);
+      busy(false);
+      msg.style.color = "var(--red)";
+      msg.textContent = /already registered/i.test(err.message || "")
+        ? "That email already has an account — tap Sign in."
+        : (err.message || "Could not create account.");
+    }
+  };
 
-  openModal(modalShell("Sign in", body));
+  body.append(signInBtn, signUpBtn);
+  openModal(modalShell("Account", body));
 }
 
 async function initAuth() {
