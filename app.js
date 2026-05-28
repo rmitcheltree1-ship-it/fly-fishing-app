@@ -19,13 +19,14 @@ const CARD_GRADIENTS = [
 // Added after initial release — applied to existing DBs automatically in seedIfNeeded.
 
 const CO_EXPANSION_RIVERS = [
-  { name: "South Platte River", state: "CO", section: "11 Mile Canyon",         siteCode: "06701000", lat: 38.9172, lon: -105.5714 },
-  { name: "South Platte River", state: "CO", section: "Dream Stream",            siteCode: "06695000", lat: 38.9950, lon: -105.7856 },
+  { name: "South Platte River", state: "CO", section: "11 Mile Canyon",         siteCode: "06701000", lat: 38.9244, lon: -105.5614 },
+  { name: "South Platte River", state: "CO", section: "Dream Stream",            siteCode: "06695500", lat: 38.9133, lon: -105.6481 },
   { name: "Arkansas River",     state: "CO", section: "Parkdale / Royal Gorge",  siteCode: "07094500", lat: 38.5085, lon: -105.3617 },
   { name: "Arkansas River",     state: "CO", section: "Above Pueblo",            siteCode: "07096000", lat: 38.3378, lon: -104.6914 },
   { name: "Cache la Poudre",    state: "CO", section: "Poudre Canyon",           siteCode: "06752000", lat: 40.6761, lon: -105.1619 },
   { name: "Rio Grande",         state: "CO", section: "Wagon Wheel Gap",         siteCode: "08220000", lat: 37.7728, lon: -106.8058 },
   { name: "Dolores River",      state: "CO", section: "Below McPhee Dam",        siteCode: "09168500", lat: 37.6044, lon: -108.5011 },
+  { name: "Clear Creek",        state: "CO", section: "Clear Creek Canyon",      siteCode: "06716500", lat: 39.7567, lon: -105.2236 },
 ];
 
 // ---------- seed data ----------
@@ -204,6 +205,38 @@ async function seedIfNeeded(db) {
       }
     }
     await dbPut(db, "meta", { id: 2, value: true });
+  }
+
+  // Migration v3 — fix coordinates + add Clear Creek; update rivers already in DB by siteCode
+  const v3 = await dbGet(db, "meta", 3);
+  if (!v3) {
+    const coordFixes = {
+      "06701000": { lat: 38.9244, lon: -105.5614 },  // 11 Mile Canyon — was pointing at reservoir, not gauge
+      "06695000": null,                                // remove bad Dream Stream entry (wrong gauge/location)
+      "06695500": { lat: 38.9133, lon: -105.6481 },  // Dream Stream correct gauge
+    };
+    const newEntries = ["06695500", "06716500"];      // may need inserting if not present
+    const all = await dbGetAll(db, "rivers");
+    const bySiteCode = {};
+    for (const r of all) bySiteCode[r.siteCode] = r;
+
+    for (const [code, fix] of Object.entries(coordFixes)) {
+      if (fix === null) {
+        // Remove the bad entry
+        if (bySiteCode[code]) await dbDelete(db, "rivers", bySiteCode[code].id);
+      } else if (bySiteCode[code]) {
+        // Update coordinates in place
+        await dbPut(db, "rivers", { ...bySiteCode[code], lat: fix.lat, lon: fix.lon });
+      }
+    }
+    // Add any new rivers not yet in DB
+    const existingAfter = new Set((await dbGetAll(db, "rivers")).map(r => r.siteCode));
+    for (const r of CO_EXPANSION_RIVERS) {
+      if (newEntries.includes(r.siteCode) && !existingAfter.has(r.siteCode)) {
+        await dbPut(db, "rivers", { ...r, favorite: false, custom: false, lastCFS: null, lastWaterTempF: null, lastReadingAt: null });
+      }
+    }
+    await dbPut(db, "meta", { id: 3, value: true });
   }
 }
 
