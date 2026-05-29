@@ -1009,6 +1009,64 @@ $("#tabs").addEventListener("click", (e) => {
 
 // ---------- rivers tab ----------
 
+// ---- personal history aggregations (all derived from trips) ----
+
+function tripsForWater(r) {
+  return state.trips.filter(t => t.riverId === r.id || (t.riverUid && t.riverUid === r.uid));
+}
+
+function daysAgoText(ms) {
+  if (!ms) return "—";
+  const d = Math.floor((Date.now() - ms) / 86400000);
+  if (d <= 0) return "today";
+  if (d === 1) return "yesterday";
+  return `${d} days ago`;
+}
+
+const fmtAvg = (n) => Number.isInteger(n) ? String(n) : n.toFixed(1);
+
+// Roll a water's trip history into the numbers the UI needs. null if no trips.
+function waterStats(r) {
+  const trips = tripsForWater(r);
+  if (!trips.length) return null;
+  const n = trips.length;
+  const totalFish = trips.reduce((s, t) => s + (t.fishLanded || 0), 0);
+  const avgFish = Math.round((totalFish / n) * 10) / 10;
+  const lastDate = trips.reduce((m, t) => Math.max(m, t.date || 0), 0);
+  const good = trips.filter(t => (t.fishLanded || 0) > 0);
+  const goodCfs = good.map(t => t.flowCFS).filter(v => v != null && isFinite(v));
+  const goodAvgCfs = goodCfs.length ? goodCfs.reduce((a, b) => a + b, 0) / goodCfs.length : null;
+  const allCfs = trips.map(t => t.flowCFS).filter(v => v != null && isFinite(v));
+  const flowMin = allCfs.length ? Math.min(...allCfs) : null;
+  const flowMax = allCfs.length ? Math.max(...allCfs) : null;
+  const best = trips.reduce((b, t) => (t.fishLanded || 0) > (b ? b.fishLanded || 0 : -1) ? t : b, null);
+  // Most productive fly: most-used across trips that actually caught fish.
+  const flyCount = new Map();
+  for (const t of good) {
+    for (const uid of (t.flyUids || [])) {
+      const nm = state.flies.find(f => f.uid === uid)?.name;
+      if (nm) flyCount.set(nm, (flyCount.get(nm) || 0) + 1);
+    }
+  }
+  let topFly = null, topFlyCount = 0;
+  for (const [nm, c] of flyCount) if (c > topFlyCount) { topFlyCount = c; topFly = nm; }
+  return { trips, n, avgFish, lastDate, goodAvgCfs, flowMin, flowMax, best, topFly, topFlyCount };
+}
+
+const personalLine = (s) => `${s.n} trip${s.n === 1 ? "" : "s"} · avg ${fmtAvg(s.avgFish)} fish · last fished ${daysAgoText(s.lastDate)}`;
+
+// Compare today's flow to the average flow on this water's fish-catching days
+// (±20% tolerance). null when not enough data or stillwater.
+function conditionMatch(r) {
+  if (r.waterType === "still" || r.lastCFS == null) return null;
+  const s = waterStats(r);
+  if (!s || s.goodAvgCfs == null) return null;
+  const ratio = r.lastCFS / s.goodAvgCfs;
+  if (ratio >= 0.8 && ratio <= 1.2) return { label: "Similar to your good days", color: "#3aa76d" };
+  if (ratio > 1.2) return { label: "Higher than usual", color: "#3a7bd5" };
+  return { label: "Lower than usual", color: "#c98a3a" };
+}
+
 function buildHeroCard(r) {
   const [c1, c2] = CARD_GRADIENTS[r.id % CARD_GRADIENTS.length];
   const isStill = r.waterType === "still";
@@ -1060,7 +1118,19 @@ function buildHeroCard(r) {
     style: `background: linear-gradient(145deg, ${c1}, ${c2});`,
     onclick: () => openRiver(r.id),
   });
-  card.append(topRow, nameBlock, cfsBlock, bottomEl);
+  // Bottom group: live-conditions line + personal context (kept as one flex
+  // child so the card's space-between layout stays tight).
+  const bottomGroup = el("div", {}, [bottomEl]);
+  const stats = waterStats(r);
+  if (stats) {
+    bottomGroup.append(el("div", { style: "margin-top:6px; font-size:11px; color:rgba(255,255,255,0.9);", text: personalLine(stats) }));
+    const m = conditionMatch(r);
+    if (m) bottomGroup.append(el("div", { style: "margin-top:5px;" }, [
+      el("span", { style: `display:inline-block; font-size:11px; font-weight:700; color:#fff; background:${m.color}; padding:2px 9px; border-radius:999px;`, text: m.label }),
+    ]));
+  }
+
+  card.append(topRow, nameBlock, cfsBlock, bottomGroup);
   return card;
 }
 
@@ -1212,13 +1282,16 @@ function renderWatersSections() {
       const isStill = r.waterType === "still";
       const val = isStill ? r.lastElevationFt : r.lastCFS;
       const meta = val != null ? `${Math.round(val)} ${isStill ? "ft" : "cfs"}` : (r.section || r.state || "");
+      const s = waterStats(r);
+      const chipKids = [
+        el("div", { style: "font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: r.name }),
+        el("div", { style: "color:var(--muted); font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: meta }),
+      ];
+      if (s) chipKids.push(el("div", { style: "color:var(--teal); font-size:11px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: `${s.n} trip${s.n === 1 ? "" : "s"} · avg ${fmtAvg(s.avgFish)} fish` }));
       row.append(el("button", {
         style: "flex:0 0 auto; text-align:left; background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:10px 12px; min-width:140px; max-width:210px;",
         onclick: () => openRiver(r.id),
-      }, [
-        el("div", { style: "font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: r.name }),
-        el("div", { style: "color:var(--muted); font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: meta }),
-      ]));
+      }, chipKids));
     }
     host.append(row);
   }
@@ -1390,6 +1463,41 @@ async function openRiver(id) {
     flowCard = el("div", { class: "card" });
     body.append(flowCard);
     renderFlowLevel(r, flowCard);
+  }
+
+  // My History — personal trip log on this water (all derived from trips).
+  const stats = waterStats(r);
+  if (stats) {
+    const hist = el("div", { class: "card" });
+    hist.append(el("h3", { text: "My History" }));
+    hist.append(
+      rowKV("Trips", String(stats.n)),
+      rowKV("Best day", stats.best && stats.best.fishLanded ? `${stats.best.fishLanded} fish · ${new Date(stats.best.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}` : "—"),
+      rowKV("Top fly", stats.topFly ? `${stats.topFly} (${stats.topFlyCount}×)` : "—"),
+    );
+    const isStill = r.waterType === "still";
+    const gaugeVals = stats.trips.map(t => isStill ? t.elevationFt : t.flowCFS).filter(v => v != null && isFinite(v));
+    if (gaugeVals.length) {
+      hist.append(rowKV(isStill ? "Levels fished" : "Flow fished",
+        `${Math.round(Math.min(...gaugeVals))}–${Math.round(Math.max(...gaugeVals))} ${isStill ? "ft" : "cfs"}`));
+    }
+    const list = el("div", { style: "margin-top:10px;" });
+    for (const t of [...stats.trips].sort((a, b) => (b.date || 0) - (a.date || 0))) {
+      const gaugeTxt = t.flowCFS != null ? `${Math.round(t.flowCFS)} cfs`
+        : (t.elevationFt != null ? `${Math.round(t.elevationFt)} ft` : "");
+      const flies = tripFliesDisplay(t);
+      const sub = [gaugeTxt, flies && flies !== "—" ? flies : null].filter(Boolean).join(" · ");
+      const rowEl = el("div", { style: "padding:8px 0; border-top:1px solid var(--line); cursor:pointer;", onclick: () => { closeModal(); openTrip(t.id); } }, [
+        el("div", { style: "display:flex; justify-content:space-between; align-items:baseline;" }, [
+          el("span", { style: "font-weight:600; font-size:13px;", text: new Date(t.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) }),
+          el("span", { style: "color:var(--teal); font-weight:600; font-size:13px;", text: `${t.fishLanded || 0} fish` }),
+        ]),
+        sub ? el("div", { style: "color:var(--muted); font-size:12px; margin-top:2px;", text: sub }) : null,
+      ]);
+      list.append(rowEl);
+    }
+    hist.append(list);
+    body.append(hist);
   }
 
   const mapDiv = el("div", { class: "card", style: "padding:0; overflow:hidden;" }, [
