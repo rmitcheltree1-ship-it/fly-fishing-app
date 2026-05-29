@@ -1332,6 +1332,29 @@ function gearNames(t) {
     .join(", ");
 }
 
+// How many trips used this fly, and when last — derived from trip history
+// (never stored, so the counts can't drift).
+function flyUsage(uid) {
+  const used = state.trips.filter(t => (t.flyUids || []).includes(uid));
+  const last = used.reduce((m, t) => Math.max(m, t.date || 0), 0);
+  return { count: used.length, last };
+}
+
+// Library-fly names selected on a trip (via fly_uids).
+function flyNames(t) {
+  return (t.flyUids || [])
+    .map(uid => state.flies.find(f => f.uid === uid)?.name)
+    .filter(Boolean);
+}
+
+// Combined display for a trip's flies: library picks + the free-text fallback.
+function tripFliesDisplay(t) {
+  const parts = flyNames(t);
+  const txt = (t.fliesUsed || "").trim();
+  if (txt) parts.push(txt);
+  return parts.join(", ") || "—";
+}
+
 function openGearSheet() {
   const body = el("div");
 
@@ -1584,6 +1607,7 @@ async function newTripModal(prefRiver, editTrip = null) {
     pendingMemos: [], // { blob, mime, duration, label, name }
   };
   const selectedGear = new Set(editTrip?.gearUids ?? []);
+  const selectedFlies = new Set(editTrip?.flyUids ?? []);
 
   const body = el("div");
 
@@ -1652,12 +1676,40 @@ async function newTripModal(prefRiver, editTrip = null) {
       el("input", { type: "number", step: "0.1", value: formState.biggest, oninput: (e) => formState.biggest = e.target.value }),
     ]),
   ]);
+  body.append(stepperRow);
+
+  // Flies used — tappable chips from your library (sorted by most recent use),
+  // plus a free-text box for one-off flies not in the library.
+  const flyCardEl = el("div", { class: "card" });
+  flyCardEl.append(el("h3", { text: "Flies used" }));
+  const activeFlies = state.flies
+    .filter(f => !f.retired)
+    .sort((a, b) => flyUsage(b.uid).last - flyUsage(a.uid).last || a.name.localeCompare(b.name));
+  if (activeFlies.length) {
+    const flyChips = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
+    for (const f of activeFlies) {
+      const chip = el("button", {
+        class: "chip" + (selectedFlies.has(f.uid) ? " active" : ""),
+        text: f.name,
+        onclick: (e) => {
+          e.preventDefault();
+          if (selectedFlies.has(f.uid)) { selectedFlies.delete(f.uid); chip.classList.remove("active"); }
+          else { selectedFlies.add(f.uid); chip.classList.add("active"); }
+        },
+      });
+      flyChips.append(chip);
+    }
+    flyCardEl.append(flyChips);
+  } else {
+    flyCardEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "No flies in your library yet — add confidence flies on the Flies tab." }));
+  }
+  flyCardEl.append(el("div", { class: "form-group", style: "margin-top:10px; margin-bottom:0;" }, [
+    el("label", { text: "Other flies (free text)" }),
+    el("input", { type: "text", value: formState.fliesUsed, placeholder: "e.g. PT #18, Zebra #20", oninput: (e) => formState.fliesUsed = e.target.value }),
+  ]));
+  body.append(flyCardEl);
+
   body.append(
-    stepperRow,
-    el("div", { class: "form-group" }, [
-      el("label", { text: "Flies used" }),
-      el("input", { type: "text", value: formState.fliesUsed, placeholder: "e.g. PT #18, Zebra #20", oninput: (e) => formState.fliesUsed = e.target.value }),
-    ]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Leader / tippet" }),
       el("input", { type: "text", value: formState.leaderSetup, placeholder: "e.g. 9ft 3X + 18in 5X", oninput: (e) => formState.leaderSetup = e.target.value }),
@@ -1739,6 +1791,7 @@ async function newTripModal(prefRiver, editTrip = null) {
           biggest: parseFloat(formState.biggest) || null,
           notes: formState.notes,
           gearUids: [...selectedGear],
+          flyUids: [...selectedFlies],
           memoCount: (editTrip?.memoCount || 0) + formState.pendingMemos.length,
           dataSource: formState.dataSource || "usgs",
         };
@@ -1869,7 +1922,7 @@ async function openTrip(id) {
 
   body.append(el("div", { class: "card" }, [
     el("h3", { text: "On the water" }),
-    rowKV("Flies used", t.fliesUsed || "—"),
+    rowKV("Flies used", tripFliesDisplay(t)),
     rowKV("Leader", t.leaderSetup || "—"),
     rowKV("Gear", gearNames(t) || "—"),
     rowKV("Fish landed", String(t.fishLanded || 0)),
@@ -1985,7 +2038,7 @@ function renderFlies() {
       class: "icon-btn",
       "aria-label": "Add fly",
       html: icon(ICONS.plus, 18),
-      onclick: () => addFlyModal(),
+      onclick: () => openFlyEdit(),
     }),
   ]);
   const panel = $("#panel-flies");
@@ -2016,11 +2069,20 @@ function renderFlies() {
     return f.name.toLowerCase().includes(q) || (f.imitates||"").toLowerCase().includes(q);
   });
 
+  const active = filtered.filter(f => !f.retired);
+  const retired = filtered.filter(f => f.retired);
+
   const grid = el("div", { class: "fly-grid" });
-  for (const f of filtered) {
-    grid.append(flyCard(f));
-  }
+  for (const f of active) grid.append(flyCard(f));
   panel.append(grid);
+
+  if (retired.length) {
+    panel.append(el("div", { style: "color:var(--muted); font-size:12px; margin:18px 0 8px; text-transform:uppercase; letter-spacing:0.05em;", text: "Retired" }));
+    const rgrid = el("div", { class: "fly-grid", style: "opacity:0.55;" });
+    for (const f of retired) rgrid.append(flyCard(f));
+    panel.append(rgrid);
+  }
+
   if (!filtered.length) {
     panel.append(el("div", { class: "empty", html: `${icon(ICONS.ant, 52)}<h3>No flies match</h3>` }));
   }
@@ -2039,7 +2101,7 @@ function flyCard(f) {
     hero,
     el("div", { class: "body" }, [
       el("div", { class: "name", text: f.name }),
-      el("div", { class: "desc", text: `${f.type} · #${f.sizes}` }),
+      el("div", { class: "desc", text: `${f.type} · #${f.sizes}${f.colorVariant ? " · " + f.colorVariant : ""}` }),
     ]),
   ]);
 }
@@ -2080,9 +2142,19 @@ async function openFly(id) {
   body.append(el("div", { class: "card" }, [
     rowKV("Type", f.type),
     rowKV("Hook size", `#${f.sizes}`),
-    rowKV("Imitates", f.imitates),
-    rowKV("Best conditions", f.conditions),
+    rowKV("Color / variant", f.colorVariant || "—"),
+    rowKV("Imitates", f.imitates || "—"),
+    rowKV("Best conditions", f.conditions || "—"),
   ]));
+
+  // Usage — derived from trip history, mirrors gear.
+  const u = flyUsage(f.uid);
+  if (u.count) {
+    body.append(el("div", { class: "card" }, [
+      rowKV("Trips", String(u.count)),
+      rowKV("Last used", u.last ? new Date(u.last).toLocaleDateString() : "—"),
+    ]));
+  }
 
   if (f.notes) {
     body.append(el("div", { class: "card" }, [
@@ -2091,7 +2163,11 @@ async function openFly(id) {
     ]));
   }
 
-  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;" }, [
+    el("button", {
+      class: "btn secondary", text: "Edit",
+      onclick: (e) => { e.preventDefault(); openFlyEdit(f); },
+    }),
     el("button", {
       class: "btn secondary",
       html: f.favorite ? `${icon(ICONS.star, 18)} Unfavorite` : `${icon(ICONS.starOutline, 18)} Favorite`,
@@ -2104,40 +2180,100 @@ async function openFly(id) {
         renderFlies();
       }
     }),
+    el("button", {
+      class: "btn secondary",
+      text: f.retired ? "Un-retire" : "Retire",
+      onclick: async (e) => {
+        e.preventDefault();
+        f.retired = !f.retired;
+        await dbPut(state.db, "flies", f);
+        await reload();
+        openFly(id);
+        renderFlies();
+      }
+    }),
   ]);
 
   openModal(modalShell(f.name, body, footer));
 }
 
-function addFlyModal() {
-  const fs = { name: "", type: "Dry", sizes: "", imitates: "", conditions: "", notes: "" };
+function openFlyEdit(existing = null) {
+  const fs = {
+    name: existing?.name ?? "",
+    type: existing?.type ?? "Dry",
+    sizes: existing?.sizes ?? "",
+    colorVariant: existing?.colorVariant ?? "",
+    imitates: existing?.imitates ?? "",
+    conditions: existing?.conditions ?? "",
+    notes: existing?.notes ?? "",
+    retired: existing?.retired ?? false,
+  };
   const sel = el("select", { onchange: (e) => fs.type = e.target.value });
-  for (const t of FLY_TYPES) sel.append(el("option", { value: t, text: t }));
+  for (const t of FLY_TYPES) {
+    const o = el("option", { value: t, text: t });
+    if (t === fs.type) o.selected = true;
+    sel.append(o);
+  }
   const form = el("div");
+  const tg = (label, key, ph) => el("div", { class: "form-group" }, [
+    el("label", { text: label }),
+    el("input", { type: "text", value: fs[key], placeholder: ph || "", oninput: (e) => fs[key] = e.target.value }),
+  ]);
   form.append(
-    el("div", { class: "form-group" }, [el("label", { text: "Name" }), el("input", { oninput: (e) => fs.name = e.target.value })]),
+    tg("Pattern name", "name", "e.g. Pheasant Tail"),
     el("div", { class: "form-group" }, [el("label", { text: "Type" }), sel]),
-    el("div", { class: "form-group" }, [el("label", { text: "Hook sizes (e.g. 14–22)" }), el("input", { oninput: (e) => fs.sizes = e.target.value })]),
-    el("div", { class: "form-group" }, [el("label", { text: "Imitates" }), el("input", { oninput: (e) => fs.imitates = e.target.value })]),
-    el("div", { class: "form-group" }, [el("label", { text: "Best conditions" }), el("input", { oninput: (e) => fs.conditions = e.target.value })]),
-    el("div", { class: "form-group" }, [el("label", { text: "Notes" }), el("textarea", { rows: 3, oninput: (e) => fs.notes = e.target.value })]),
+    tg("Hook size", "sizes", "e.g. 16–20"),
+    tg("Color / variant", "colorVariant", "e.g. Olive, Flashback"),
+    tg("Imitates (optional)", "imitates", ""),
+    tg("Best conditions (optional)", "conditions", ""),
+    el("div", { class: "form-group" }, [el("label", { text: "Notes (optional)" }), el("textarea", { rows: 3, oninput: (e) => fs.notes = e.target.value }, fs.notes)]),
   );
+
+  if (existing) {
+    const retireWrap = el("label", { style: "display:flex; align-items:center; gap:8px; margin:4px 0 8px; color:var(--muted);" });
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = fs.retired;
+    cb.onchange = (e) => fs.retired = e.target.checked;
+    retireWrap.append(cb, el("span", { text: "Retired (hide from trip picker, keep history)" }));
+    form.append(retireWrap);
+  }
+
   const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
-    el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); } }),
+    existing
+      ? el("button", { class: "btn danger", text: "Delete", onclick: async (e) => {
+          e.preventDefault();
+          if (!confirm(`Delete ${existing.name}? Past trips keep their record of it.`)) return;
+          await softDelete("flies", existing.id);
+          await reload();
+          closeModal();
+          renderFlies();
+          toast("Fly deleted");
+        }})
+      : el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); } }),
     el("button", {
-      class: "btn", text: "Save",
+      class: "btn", text: existing ? "Save" : "Add fly",
       onclick: async (e) => {
         e.preventDefault();
-        if (!fs.name) { toast("Name required"); return; }
-        await dbPut(state.db, "flies", { ...fs, favorite: false, imageDataUrl: null });
+        if (!fs.name.trim()) { toast("Pattern name required"); return; }
+        await dbPut(state.db, "flies", {
+          ...(existing || { favorite: false, imageDataUrl: null }),
+          name: fs.name.trim(),
+          type: fs.type,
+          sizes: fs.sizes.trim(),
+          colorVariant: fs.colorVariant.trim(),
+          imitates: fs.imitates.trim(),
+          conditions: fs.conditions.trim(),
+          notes: fs.notes.trim(),
+          retired: !!fs.retired,
+        });
         await reload();
         renderFlies();
         closeModal();
-        toast("Fly added");
+        toast(existing ? "Fly saved" : "Fly added");
       }
     })
   ]);
-  openModal(modalShell("Add a fly", form, footer));
+  openModal(modalShell(existing ? "Edit fly" : "Add a fly", form, footer));
 }
 
 // ---------- leaders tab ----------
@@ -2398,25 +2534,30 @@ function endSessionSheet() {
     el("label", { text: "Biggest fish (inches, optional)" }), biggestInput,
   ]));
 
-  // Flies — tappable chips
+  // Flies — tappable chips (active library flies, most-recently-used first)
   const selectedFlies = new Set();
-  const flyChipsEl = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
-  for (const f of state.flies) {
-    const chip = el("button", {
-      class: "chip",
-      text: f.name,
-      onclick: (e) => {
-        e.preventDefault();
-        if (selectedFlies.has(f.id)) { selectedFlies.delete(f.id); chip.classList.remove("active"); }
-        else { selectedFlies.add(f.id); chip.classList.add("active"); }
-      },
-    });
-    flyChipsEl.append(chip);
+  const activeFlies = state.flies
+    .filter(f => !f.retired)
+    .sort((a, b) => flyUsage(b.uid).last - flyUsage(a.uid).last || a.name.localeCompare(b.name));
+  if (activeFlies.length) {
+    const flyChipsEl = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
+    for (const f of activeFlies) {
+      const chip = el("button", {
+        class: "chip",
+        text: f.name,
+        onclick: (e) => {
+          e.preventDefault();
+          if (selectedFlies.has(f.uid)) { selectedFlies.delete(f.uid); chip.classList.remove("active"); }
+          else { selectedFlies.add(f.uid); chip.classList.add("active"); }
+        },
+      });
+      flyChipsEl.append(chip);
+    }
+    body.append(el("div", { class: "form-group" }, [
+      el("label", { text: "Flies used — tap to select" }),
+      flyChipsEl,
+    ]));
   }
-  body.append(el("div", { class: "form-group" }, [
-    el("label", { text: "Flies used — tap to select" }),
-    flyChipsEl,
-  ]));
 
   // Gear — tappable chips (active gear only)
   const selectedGear = new Set();
@@ -2454,13 +2595,10 @@ function endSessionSheet() {
     el("button", { class: "btn", text: "Save trip",
       onclick: async (e) => {
         e.preventDefault();
-        const fliesUsed = [...selectedFlies]
-          .map(id => state.flies.find(f => f.id === id)?.name)
-          .filter(Boolean).join(", ");
         await finishSession({
           fishCount: parseInt(countInput.value) || 0,
           biggest: parseFloat(biggestInput.value) || null,
-          fliesUsed,
+          flyUids: [...selectedFlies],
           gearUids: [...selectedGear],
           notes: notesInput.value.trim(),
         });
@@ -2495,7 +2633,8 @@ async function finishSession(picks) {
     precipIn:     sess.weather?.precipIn  ?? null,
     cloudPct:     sess.weather?.cloudPct  ?? null,
     humidity:     sess.weather?.humidity  ?? null,
-    fliesUsed:    picks.fliesUsed,
+    fliesUsed:    picks.fliesUsed || "",
+    flyUids:      picks.flyUids || [],
     gearUids:     picks.gearUids || [],
     leaderSetup:  "",
     fishLanded:   picks.fishCount,
@@ -2546,9 +2685,9 @@ const FIELD_MAP = {
     memo_count: "memoCount", data_source: "dataSource",
   },
   flies: {
-    name: "name", type: "type", sizes: "sizes", imitates: "imitates",
-    conditions: "conditions", notes: "notes", favorite: "favorite",
-    image_data_url: "imageDataUrl",
+    name: "name", type: "type", sizes: "sizes", color_variant: "colorVariant",
+    imitates: "imitates", conditions: "conditions", notes: "notes",
+    favorite: "favorite", retired: "retired", image_data_url: "imageDataUrl",
   },
   leaders: {
     name: "name", situation: "situation", rod: "rod", length: "length",
@@ -2575,8 +2714,11 @@ function toRemote(store, rec, userId) {
     deleted: !!rec.deleted,
   };
   for (const [col, key] of Object.entries(map)) out[col] = rec[key] ?? null;
-  // trips carry a list of gear uids — stored remotely as JSON text.
-  if (store === "trips") out.gear_uids = JSON.stringify(rec.gearUids || []);
+  // trips carry lists of gear + fly uids — stored remotely as JSON text.
+  if (store === "trips") {
+    out.gear_uids = JSON.stringify(rec.gearUids || []);
+    out.fly_uids = JSON.stringify(rec.flyUids || []);
+  }
   return out;
 }
 
@@ -2588,7 +2730,10 @@ function fromRemote(store, row) {
     deleted: !!row.deleted,
   };
   for (const [col, key] of Object.entries(map)) out[key] = row[col] ?? null;
-  if (store === "trips") out.gearUids = safeParseArr(row.gear_uids);
+  if (store === "trips") {
+    out.gearUids = safeParseArr(row.gear_uids);
+    out.flyUids = safeParseArr(row.fly_uids);
+  }
   return out;
 }
 

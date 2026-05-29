@@ -52,12 +52,14 @@ create table if not exists trips (
   memo_count      integer,
   data_source     text,
   gear_uids       text,
+  fly_uids        text,
   updated_at      timestamptz default now(),
   deleted         boolean default false
 );
 
--- If the trips table already exists from an earlier run, add the new column:
+-- If the trips table already exists from an earlier run, add the new columns:
 alter table trips add column if not exists gear_uids text;
+alter table trips add column if not exists fly_uids  text;
 
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
@@ -66,14 +68,20 @@ create table if not exists flies (
   name           text,
   type           text,
   sizes          text,
+  color_variant  text,
   imitates       text,
   conditions     text,
   notes          text,
   favorite       boolean default false,
+  retired        boolean default false,
   image_data_url text,
   updated_at     timestamptz default now(),
   deleted        boolean default false
 );
+
+-- If the flies table already exists from an earlier run, add the new columns:
+alter table flies add column if not exists color_variant text;
+alter table flies add column if not exists retired       boolean default false;
 
 -- ──────────────────────── LEADERS ─────────────────────────
 create table if not exists leaders (
