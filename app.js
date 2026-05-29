@@ -133,6 +133,41 @@ const SYNCED_STORES = ["rivers", "trips", "flies", "leaders", "gear"];
 // Gear categories tracked per the user's setup (rods, waders, boots).
 const GEAR_TYPES = ["Rod", "Waders", "Boots", "Other"];
 
+// Standard selections so gear entry is tap-not-type. Brand → models cascade.
+// Picking a brand filters the model list; "Other…" reveals a free-text field
+// for anything not listed.
+const GEAR_CATALOG = {
+  Rod: {
+    "Sage":        ["R8 Core", "Foundation", "Sense", "ESN", "Payload", "Trout LL", "Dart"],
+    "Orvis":       ["Helios", "Helios 3D", "Helios 3F", "Recon", "Clearwater", "Superfine"],
+    "Scott":       ["Centric", "Sector", "G Series", "Flex"],
+    "Winston":     ["Air 2", "Pure", "Nimbus", "Air TH", "Boron III LS"],
+    "G. Loomis":   ["NRX+", "Asquith", "IMX-Pro", "Trout LP"],
+    "Echo":        ["Carbon", "Boost", "Trout", "ION XL", "Bad Ass Glass"],
+    "Redington":   ["Vice", "Classic Trout", "Path", "Strike", "Butter Stick"],
+    "Temple Fork": ["Pro III", "BVK", "NXT Black Label", "Axiom II", "Blue Ribbon"],
+    "Douglas":     ["Sky G", "DXF", "Upstream", "LRS"],
+    "Hardy":       ["Zephrus", "Ultralite", "Marksman"],
+  },
+  Waders: {
+    "Simms":       ["G3 Guide", "G4 Pro", "Freestone", "Tributary", "Headwaters Pro"],
+    "Orvis":       ["Pro", "Clearwater", "Ultralight", "Pro Zip"],
+    "Patagonia":   ["Swiftcurrent", "Swiftcurrent Expedition", "Swiftcurrent Ultralight"],
+    "Redington":   ["Sonic-Pro", "Crosswater", "Escape", "Willow River"],
+    "Grundens":    ["Boundary", "Bedrock"],
+    "Frogg Toggs": ["Hellbender", "Canyon", "Pilot II"],
+  },
+  Boots: {
+    "Simms":     ["G3 Guide", "Freestone", "Flyweight", "Tributary", "G4 Pro"],
+    "Orvis":     ["Pro", "Clearwater", "Ultralight", "PRO Approach"],
+    "Patagonia": ["Foot Tractor", "Forra", "Danner Foot Tractor"],
+    "Korkers":   ["Devil's Canyon", "Greenback", "Terror Ridge", "Darkhorse"],
+    "Redington": ["Prowler", "Palix River", "Skagit River"],
+  },
+};
+const ROD_WEIGHTS = ["1wt","2wt","3wt","4wt","5wt","6wt","7wt","8wt","9wt","10wt","11wt","12wt"];
+const ROD_LENGTHS = ["6'0\"","6'6\"","7'0\"","7'6\"","8'0\"","8'6\"","9'0\"","9'6\"","10'0\"","10'6\"","11'0\""];
+
 // Baseline timestamp stamped onto freshly-seeded default data, so that a genuine
 // cloud edit (always newer) wins over a default that a new device just re-seeded.
 const SEED_TS = Date.parse("2020-01-01T00:00:00Z");
@@ -1331,28 +1366,103 @@ function openGearEdit(existing = null) {
     name: existing?.name ?? "",
     type: existing?.type ?? "Rod",
     brand: existing?.brand ?? "",
+    model: existing?.model ?? "",
+    weight: existing?.weight ?? "",
+    length: existing?.length ?? "",
     notes: existing?.notes ?? "",
     retired: existing?.retired ?? false,
   };
+  // Track whether brand/model are off-catalog (free text) for existing records.
+  const known = GEAR_CATALOG[s.type] || {};
+  s._brandCustom = !!(s.brand && !Object.keys(known).includes(s.brand));
+  s._modelCustom = !!(s.model && !(known[s.brand] || []).includes(s.model));
+
   const body = el("div");
 
-  const typeSel = el("select", { onchange: (e) => s.type = e.target.value });
+  // Build a labelled <select>. allowOther appends an "Other…" escape hatch.
+  const buildSelect = (label, opts, val, allowOther, onChange) => {
+    const sel = el("select", { onchange: (e) => onChange(e.target.value) });
+    sel.append(el("option", { value: "", text: "— Select —" }));
+    for (const o of opts) {
+      const opt = el("option", { value: o, text: o });
+      if (o === val) opt.selected = true;
+      sel.append(opt);
+    }
+    if (allowOther) {
+      const other = el("option", { value: "__other__", text: "Other…" });
+      if (val && !opts.includes(val)) other.selected = true;
+      sel.append(other);
+    }
+    return el("div", { class: "form-group" }, [el("label", { text: label }), sel]);
+  };
+  const textGroup = (label, val, ph, onInput) =>
+    el("div", { class: "form-group" }, [
+      el("label", { text: label }),
+      el("input", { type: "text", value: val, placeholder: ph || "", oninput: (e) => onInput(e.target.value) }),
+    ]);
+
+  // Type selector
+  const typeSel = el("select", { onchange: (e) => { s.type = e.target.value; s.brand = ""; s.model = ""; s.weight = ""; s.length = ""; s._brandCustom = false; s._modelCustom = false; renderDyn(); } });
   for (const t of GEAR_TYPES) {
     const o = el("option", { value: t, text: t });
     if (t === s.type) o.selected = true;
     typeSel.append(o);
   }
+  body.append(el("div", { class: "form-group" }, [el("label", { text: "Type" }), typeSel]));
+
+  // Dynamic section (brand/model/weight/length OR free-text for "Other")
+  const dyn = el("div");
+  body.append(dyn);
+
+  function renderDyn() {
+    dyn.innerHTML = "";
+    if (s.type === "Other") {
+      dyn.append(
+        textGroup("Name", s.name, "e.g. Landing net, sling pack", (v) => s.name = v),
+        textGroup("Brand (optional)", s.brand, "", (v) => s.brand = v),
+      );
+      return;
+    }
+
+    const cat = GEAR_CATALOG[s.type] || {};
+    const brands = Object.keys(cat);
+
+    // Brand
+    dyn.append(buildSelect("Brand", brands, s._brandCustom ? "__other__" : s.brand, true, (v) => {
+      if (v === "__other__") { s._brandCustom = true; s.brand = ""; }
+      else { s._brandCustom = false; s.brand = v; }
+      s.model = ""; s._modelCustom = false;
+      renderDyn();
+    }));
+    if (s._brandCustom) {
+      dyn.append(textGroup("Brand name", s.brand, "Type the brand", (v) => s.brand = v));
+    }
+
+    // Model — cascades from brand
+    const models = (!s._brandCustom && s.brand) ? (cat[s.brand] || []) : [];
+    if (models.length) {
+      dyn.append(buildSelect("Model", models, s._modelCustom ? "__other__" : s.model, true, (v) => {
+        if (v === "__other__") { s._modelCustom = true; s.model = ""; }
+        else { s._modelCustom = false; s.model = v; }
+        renderDyn();
+      }));
+      if (s._modelCustom) {
+        dyn.append(textGroup("Model name", s.model, "Type the model", (v) => s.model = v));
+      }
+    } else if (s.brand || s._brandCustom) {
+      // Custom brand (or a brand with no preset models) → free-text model.
+      dyn.append(textGroup("Model (optional)", s.model, "e.g. the model name", (v) => s.model = v));
+    }
+
+    // Rods also get weight + length
+    if (s.type === "Rod") {
+      dyn.append(buildSelect("Line weight", ROD_WEIGHTS, s.weight, false, (v) => s.weight = v));
+      dyn.append(buildSelect("Length", ROD_LENGTHS, s.length, false, (v) => s.length = v));
+    }
+  }
+  renderDyn();
 
   body.append(
-    el("div", { class: "form-group" }, [
-      el("label", { text: "Name" }),
-      el("input", { type: "text", value: s.name, placeholder: "e.g. Sage R8 5wt", oninput: (e) => s.name = e.target.value }),
-    ]),
-    el("div", { class: "form-group" }, [el("label", { text: "Type" }), typeSel]),
-    el("div", { class: "form-group" }, [
-      el("label", { text: "Brand / model (optional)" }),
-      el("input", { type: "text", value: s.brand, placeholder: "e.g. Simms G3", oninput: (e) => s.brand = e.target.value }),
-    ]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Notes (optional)" }),
       el("textarea", { rows: 3, oninput: (e) => s.notes = e.target.value }, s.notes),
@@ -1390,12 +1500,23 @@ function openGearEdit(existing = null) {
       : el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); openGearSheet(); } }),
     el("button", { class: "btn", text: existing ? "Save" : "Add gear", onclick: async (e) => {
       e.preventDefault();
-      if (!s.name.trim()) { toast("Name required"); return; }
+      const brand = (s.brand || "").trim();
+      const model = (s.model || "").trim();
+      const weight = s.type === "Rod" ? (s.weight || "").trim() : "";
+      const length = s.type === "Rod" ? (s.length || "").trim() : "";
+      // Compose a display name from the structured fields (free text for "Other").
+      const name = s.type === "Other"
+        ? (s.name || "").trim()
+        : [brand, model, weight, length].filter(Boolean).join(" ");
+      if (!name) { toast(s.type === "Other" ? "Name required" : "Pick a brand to start"); return; }
       await dbPut(state.db, "gear", {
         ...(existing || {}),
-        name: s.name.trim(),
+        name,
         type: s.type,
-        brand: s.brand.trim(),
+        brand,
+        model,
+        weight,
+        length,
         notes: s.notes.trim(),
         retired: !!s.retired,
       });
@@ -2406,7 +2527,8 @@ const FIELD_MAP = {
     taper: "taper", tippet: "tippet", diagram: "diagram", tips: "tips",
   },
   gear: {
-    name: "name", type: "type", brand: "brand", notes: "notes", retired: "retired",
+    name: "name", type: "type", brand: "brand", model: "model",
+    weight: "weight", length: "length", notes: "notes", retired: "retired",
   },
 };
 

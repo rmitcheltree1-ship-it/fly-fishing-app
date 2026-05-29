@@ -98,11 +98,19 @@ create table if not exists gear (
   name       text,
   type       text,
   brand      text,
+  model      text,
+  weight     text,
+  length     text,
   notes      text,
   retired    boolean default false,
   updated_at timestamptz default now(),
   deleted    boolean default false
 );
+
+-- If the gear table already exists from an earlier run, add the new columns:
+alter table gear add column if not exists model  text;
+alter table gear add column if not exists weight text;
+alter table gear add column if not exists length text;
 
 -- ───────────── Row Level Security: you only ever see your own data ─────────────
 alter table rivers  enable row level security;
