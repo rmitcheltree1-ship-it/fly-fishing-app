@@ -2069,10 +2069,13 @@ async function openTrip(id) {
     ]));
   }
 
+  // Only pass a station object if the trip actually captured a gauge reading —
+  // otherwise (un-gauged pond) show weather only, like the water detail screen.
+  const hasStation = [t.flowCFS, t.gaugeHeightFt, t.elevationFt, t.waterTempF].some(v => v != null);
   const condCard = el("div", { class: "card" }, [
     el("h3", { text: "Conditions" }),
     buildConditionsGrid(
-      { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt, elevationFt: t.elevationFt, storageAf: null },
+      hasStation ? { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt, elevationFt: t.elevationFt, storageAf: null } : null,
       { airTempF: t.airTempF, windMph: t.windMph, windDir: t.windDir, pressureHpa: t.pressureHpa, precipIn: t.precipIn, cloudPct: t.cloudPct, humidity: t.humidity },
       t.dataSource,
       t.waterType,
