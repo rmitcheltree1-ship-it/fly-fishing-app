@@ -736,6 +736,62 @@ async function fetchWeather(lat, lon) {
   };
 }
 
+// USGS daily-mean values for a specific past date (YYYY-MM-DD) — used to
+// back-fill conditions when logging a trip after the fact.
+async function fetchUSGSDaily(siteCode, dateStr) {
+  const url = `https://waterservices.usgs.gov/nwis/dv/?format=json&sites=${encodeURIComponent(siteCode)}&startDT=${dateStr}&endDT=${dateStr}&parameterCd=00060,00010,00065,00062&siteStatus=all`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS DV ${r.status}`);
+  const data = await r.json();
+  const out = { flowCFS: null, waterTempF: null, gaugeHeightFt: null, elevationFt: null, storageAf: null, observedAt: null };
+  for (const s of (data?.value?.timeSeries ?? [])) {
+    const code = s?.variable?.variableCode?.[0]?.value;
+    const vals = s?.values?.[0]?.value ?? [];
+    const match = vals.find(v => (v.dateTime || "").startsWith(dateStr)) || vals[vals.length - 1];
+    if (!match) continue;
+    const v = parseFloat(match.value);
+    if (!isFinite(v) || v < -100000) continue;
+    if (code === "00060") out.flowCFS = v;
+    else if (code === "00010") out.waterTempF = v * 9/5 + 32;
+    else if (code === "00065") out.gaugeHeightFt = v;
+    else if (code === "00062") out.elevationFt = v;
+    out.observedAt = match.dateTime || `${dateStr}T12:00`;
+  }
+  return out;
+}
+
+// Historical hourly weather for a past date. Tries the forecast endpoint first
+// (keeps ~3 months of recent past), then the long-term archive (ERA5).
+async function fetchWeatherArchive(lat, lon, dateStr, hour = 12) {
+  const qs = new URLSearchParams({
+    latitude: lat, longitude: lon,
+    hourly: "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,surface_pressure,cloud_cover",
+    temperature_unit: "fahrenheit", wind_speed_unit: "mph", precipitation_unit: "inch",
+    start_date: dateStr, end_date: dateStr, timezone: "auto",
+  });
+  for (const base of ["https://api.open-meteo.com/v1/forecast", "https://archive-api.open-meteo.com/v1/archive"]) {
+    try {
+      const r = await fetch(`${base}?${qs}`);
+      if (!r.ok) continue;
+      const h = (await r.json())?.hourly;
+      if (!h?.time?.length) continue;
+      let idx = h.time.findIndex(t => t.startsWith(`${dateStr}T${String(hour).padStart(2, "0")}`));
+      if (idx < 0) idx = Math.min(Math.max(hour, 0), h.time.length - 1);
+      return {
+        airTempF: h.temperature_2m?.[idx],
+        humidity: h.relative_humidity_2m?.[idx],
+        precipIn: h.precipitation?.[idx],
+        windMph: h.wind_speed_10m?.[idx],
+        windDir: h.wind_direction_10m?.[idx],
+        pressureHpa: h.surface_pressure?.[idx],
+        cloudPct: h.cloud_cover?.[idx],
+        observedAt: h.time?.[idx],
+      };
+    } catch (_) {}
+  }
+  return null;
+}
+
 function compass(deg) {
   if (deg == null || !isFinite(deg)) return "";
   const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
@@ -2079,10 +2135,24 @@ async function newTripModal(prefRiver, editTrip = null) {
     riverSel.append(o);
   }
 
+  // Snapshot button label changes when the trip date is in the past (it then
+  // back-fills that day's historical conditions instead of live ones).
+  let snapBtn = null;
+  const computeSnapLabel = () => {
+    const dateStr = (formState.date || "").slice(0, 10);
+    const todayStr = toLocalInput(Date.now()).slice(0, 10);
+    if (dateStr && dateStr < todayStr) {
+      const d = new Date(formState.date);
+      return `Fetch conditions for ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+    }
+    return editTrip ? "Re-snapshot conditions" : "Snapshot current conditions";
+  };
+  const refreshSnapLabel = () => { const sp = snapBtn?.querySelector("span"); if (sp) sp.textContent = computeSnapLabel(); };
+
   body.append(
     el("div", { class: "form-group" }, [
       el("label", { text: "When" }),
-      el("input", { type: "datetime-local", value: formState.date, oninput: (e) => formState.date = e.target.value }),
+      el("input", { type: "datetime-local", value: formState.date, oninput: (e) => { formState.date = e.target.value; refreshSnapLabel(); } }),
     ]),
     el("div", { class: "form-group" }, [el("label", { text: "River" }), riverSel]),
     el("div", { class: "form-group" }, [
@@ -2094,9 +2164,9 @@ async function newTripModal(prefRiver, editTrip = null) {
   // Conditions snapshot
   const condCard = el("div", { class: "card" });
   if (editTrip) condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, state.rivers.find(r => r.id === formState.riverId)?.waterType));
-  const snapBtn = el("button", {
+  snapBtn = el("button", {
     class: "btn secondary",
-    html: `${icon(ICONS.refresh, 18)} <span>${editTrip ? "Re-snapshot conditions" : "Snapshot current conditions"}</span>`,
+    html: `${icon(ICONS.refresh, 18)} <span>${computeSnapLabel()}</span>`,
     onclick: async (e) => {
       e.preventDefault();
       snapBtn.disabled = true;
@@ -2104,17 +2174,40 @@ async function newTripModal(prefRiver, editTrip = null) {
       condCard.append(conditionsGridSkeleton());
       const river = state.rivers.find(r => r.id === formState.riverId);
       if (!river) { snapBtn.disabled = false; return; }
-      // Try geolocation first
-      try {
-        formState.coords = await new Promise((res, rej) => {
-          navigator.geolocation.getCurrentPosition(
-            p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
-            rej, { timeout: 8000, maximumAge: 600000 }
-          );
-        });
-      } catch (_) { formState.coords = { lat: river.lat, lon: river.lon }; }
-      try { formState.usgs = river.source === "dwr" ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
-      try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
+
+      const dateStr = (formState.date || "").slice(0, 10);
+      const hour = parseInt((formState.date || "").slice(11, 13), 10) || 12;
+      const todayStr = toLocalInput(Date.now()).slice(0, 10);
+      const isPast = dateStr && dateStr < todayStr;
+
+      if (isPast) {
+        // Historical: use the river's own location (you're not there now) and
+        // pull that day's daily reading + archived weather.
+        formState.coords = { lat: river.lat, lon: river.lon };
+        if (river.siteCode && river.source !== "dwr") {
+          try { formState.usgs = await fetchUSGSDaily(river.siteCode, dateStr); } catch (_) {}
+        } else if (river.source === "dwr") {
+          toast("Historical gauge data isn't available for CO DWR sites");
+          formState.usgs = null;
+        }
+        try { formState.weather = await fetchWeatherArchive(river.lat, river.lon, dateStr, hour); } catch (_) {}
+        if (formState.usgs && formState.usgs.flowCFS == null && formState.usgs.elevationFt == null) {
+          toast("No USGS reading published for that date");
+        }
+      } else {
+        // Live: prefer current GPS, fall back to the river's coords.
+        try {
+          formState.coords = await new Promise((res, rej) => {
+            navigator.geolocation.getCurrentPosition(
+              p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
+              rej, { timeout: 8000, maximumAge: 600000 }
+            );
+          });
+        } catch (_) { formState.coords = { lat: river.lat, lon: river.lon }; }
+        try { formState.usgs = river.source === "dwr" ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
+        try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
+      }
+
       formState.dataSource = river.source || "usgs";
       condCard.innerHTML = "";
       condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, river.waterType));
