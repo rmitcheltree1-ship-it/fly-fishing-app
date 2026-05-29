@@ -541,6 +541,86 @@ async function fetchUSGS(siteCode) {
   return out;
 }
 
+// Historical daily-flow percentiles for *today's* calendar day, from the USGS
+// Statistics service (period of record). Used to say whether a river is running
+// low / normal / high vs. its seasonal norm.
+async function fetchUSGSStats(siteCode) {
+  const url = `https://waterservices.usgs.gov/nwis/stat/?format=rdb&sites=${encodeURIComponent(siteCode)}&statReportType=daily&statTypeCd=all&parameterCd=00060`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS stat ${r.status}`);
+  const text = await r.text();
+  const lines = text.split("\n").filter(l => !l.startsWith("#") && l.trim());
+  if (lines.length < 3) return null;
+  const headers = lines[0].split("\t");
+  const idx = (n) => headers.indexOf(n);
+  const mi = idx("month_nu"), di = idx("day_nu");
+  const cols = { p10: idx("p10_va"), p25: idx("p25_va"), p50: idx("p50_va"), p75: idx("p75_va"), p90: idx("p90_va") };
+  if (mi < 0 || di < 0 || cols.p50 < 0) return null;
+  const now = new Date(), m = now.getMonth() + 1, d = now.getDate();
+  for (const line of lines.slice(2)) {          // skip header + format-descriptor row
+    const c = line.split("\t");
+    if (parseInt(c[mi], 10) === m && parseInt(c[di], 10) === d) {
+      const num = (i) => { const v = parseFloat(c[i]); return isFinite(v) ? v : null; };
+      return { p10: num(cols.p10), p25: num(cols.p25), p50: num(cols.p50), p75: num(cols.p75), p90: num(cols.p90) };
+    }
+  }
+  return null;
+}
+
+// Estimate the percentile (0–100) of a flow within a day's historical spread by
+// piecewise-linear interpolation across the p10/p25/p50/p75/p90 anchors.
+function estimatePctl(cfs, s) {
+  if (!s || s.p50 == null || cfs == null) return null;
+  const anchors = [[10, s.p10], [25, s.p25], [50, s.p50], [75, s.p75], [90, s.p90]]
+    .filter(a => a[1] != null && isFinite(a[1]));
+  if (!anchors.length) return null;
+  if (cfs <= anchors[0][1]) {
+    const [p0, v0] = anchors[0];
+    return Math.max(0, Math.round(v0 ? p0 * (cfs / v0) : 0));
+  }
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const [p0, v0] = anchors[i], [p1, v1] = anchors[i + 1];
+    if (cfs <= v1) {
+      const frac = v1 === v0 ? 0 : (cfs - v0) / (v1 - v0);
+      return Math.round(p0 + frac * (p1 - p0));
+    }
+  }
+  const [pLast, vLast] = anchors[anchors.length - 1];
+  const frac = vLast ? Math.min(1, (cfs - vLast) / vLast) : 1;
+  return Math.round(Math.min(100, pLast + frac * (100 - pLast)));
+}
+
+// Flow level for a river row/detail. A user-set ideal range wins; otherwise the
+// cached percentile (vs. seasonal norm) drives it. Returns null when unknown.
+function classifyFlow(r) {
+  if (!r || r.waterType === "still") return null;
+  const cfs = r.lastCFS;
+  if (cfs == null) return null;
+  if (r.idealFlowMin != null && r.idealFlowMax != null) {
+    if (cfs < r.idealFlowMin) return { label: "Low",      color: "#c98a3a" };
+    if (cfs > r.idealFlowMax) return { label: "High",     color: "#3a7bd5" };
+    return { label: "In range", color: "#3aa76d" };
+  }
+  const p = r.lastFlowPctl;
+  if (p == null) return null;
+  if (p < 10)  return { label: "Very low",  color: "#9b6b3a", pct: p };
+  if (p < 25)  return { label: "Low",       color: "#c98a3a", pct: p };
+  if (p <= 75) return { label: "Normal",    color: "#3aa76d", pct: p };
+  if (p <= 90) return { label: "High",      color: "#3a7bd5", pct: p };
+  return { label: "Very high", color: "#2b5fb0", pct: p };
+}
+
+// Fetch + cache today's flow percentile on a river (skips stillwater, DWR, and
+// rivers with a manual ideal range, which don't need it).
+async function applyFlowPercentile(r, flowCFS) {
+  if (r.waterType === "still" || r.source === "dwr" || flowCFS == null) return;
+  if (r.idealFlowMin != null && r.idealFlowMax != null) return;
+  try {
+    const p = estimatePctl(flowCFS, await fetchUSGSStats(r.siteCode));
+    if (p != null) r.lastFlowPctl = p;
+  } catch (_) {}
+}
+
 async function fetchDWR(abbrev) {
   // Colorado DWR telemetry station — returns current reading + stage
   // The station endpoint includes the most-recent measValue inline, so one call is enough.
@@ -1134,8 +1214,10 @@ function riverRow(r, distanceMi = null) {
   if (trend === "rising")  subBits.push(el("span", { class: "trend-rising",  text: " ↑ rising" }));
   if (trend === "falling") subBits.push(el("span", { class: "trend-falling", text: " ↓ falling" }));
 
-  // At-a-glance condition line: freshness dot + water temp.
+  // At-a-glance condition line: flow level + freshness dot + water temp.
   const condEls = [];
+  const fc = classifyFlow(r);
+  if (fc) condEls.push(el("span", { style: `color:${fc.color}; font-weight:700;`, text: fc.label }));
   if (hasReading) condEls.push(freshnessDot(r));
   if (r.lastWaterTempF != null) condEls.push(el("span", { text: `${Math.round(r.lastWaterTempF)}°F water` }));
   const condLine = condEls.length
@@ -1197,6 +1279,7 @@ function prefetchConditions() {
         if (usgs.flowCFS == null) return;
         r.prevCFS = r.lastCFS ?? null;
         r.lastCFS = usgs.flowCFS;
+        await applyFlowPercentile(r, usgs.flowCFS);
       }
       r.lastWaterTempF = usgs.waterTempF;
       r.lastReadingAt = usgs.observedAt;
@@ -1226,6 +1309,14 @@ async function openRiver(id) {
   const metrics = el("div", { class: "card" }, [conditionsGridSkeleton()]);
   body.append(metrics);
 
+  // Flow level (rivers only) — percentile read + optional ideal-range override.
+  let flowCard = null;
+  if (r.waterType !== "still" && r.siteCode) {
+    flowCard = el("div", { class: "card" });
+    body.append(flowCard);
+    renderFlowLevel(r, flowCard);
+  }
+
   const mapDiv = el("div", { class: "card", style: "padding:0; overflow:hidden;" }, [
     el("div", { id: "river-mini-map", style: "height:200px;" })
   ]);
@@ -1239,7 +1330,7 @@ async function openRiver(id) {
   const refreshBtn = el("button", {
     class: "btn secondary",
     html: `${icon(ICONS.refresh, 18)} <span>Refresh</span>`,
-    onclick: () => refreshRiverConditions(r, metrics),
+    onclick: () => { refreshRiverConditions(r, metrics); if (flowCard) renderFlowLevel(r, flowCard); },
     style: "margin-top:8px;",
   });
   const deleteBtn = el("button", {
@@ -1309,6 +1400,80 @@ function metric(label, value, unit, ic, color) {
     el("div", { class: "u", text: unit ?? "" }),
     el("div", { class: "l", text: label }),
   ]);
+}
+
+// Flow-level card for the river detail: a colored gradient bar with a marker at
+// today's flow, a label (Low/Normal/High), "% of normal", and an editable
+// "ideal range" the user can set to override the percentile read.
+async function renderFlowLevel(r, card) {
+  card.innerHTML = "";
+  card.append(el("h3", { text: "Flow level" }));
+  const bodyEl = el("div");
+  card.append(bodyEl);
+  bodyEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "Loading…" }));
+
+  let flow = r.lastCFS, stats = null;
+  try { const u = await fetchUSGS(r.siteCode); if (u?.flowCFS != null) flow = u.flowCFS; } catch (_) {}
+  try { stats = await fetchUSGSStats(r.siteCode); } catch (_) {}
+
+  bodyEl.innerHTML = "";
+  const hasIdeal = r.idealFlowMin != null && r.idealFlowMax != null;
+  const pct = stats ? estimatePctl(flow, stats) : null;
+
+  // Label + sub text
+  let label = "—", color = "var(--muted)", subText = "";
+  if (flow == null) {
+    subText = "No live flow reading right now.";
+  } else if (hasIdeal) {
+    if (flow < r.idealFlowMin)      { label = "Low";  color = "#c98a3a"; }
+    else if (flow > r.idealFlowMax) { label = "High"; color = "#3a7bd5"; }
+    else                            { label = "In range"; color = "#3aa76d"; }
+    subText = `${Math.round(flow)} cfs · your ideal ${r.idealFlowMin}–${r.idealFlowMax} cfs`;
+  } else if (pct != null) {
+    const c = classifyFlow({ ...r, lastFlowPctl: pct });
+    label = c.label; color = c.color;
+    const md = new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    subText = stats?.p50 ? `${Math.round(flow)} cfs · ${Math.round(flow / stats.p50 * 100)}% of normal for ${md} · ${pct}th pctl` : `${pct}th percentile`;
+  } else {
+    subText = flow != null ? `${Math.round(flow)} cfs · no historical stats for this gauge` : "";
+  }
+
+  bodyEl.append(el("div", { style: "display:flex; align-items:baseline; gap:8px;" }, [
+    el("span", { style: `font-size:20px; font-weight:800; color:${color};`, text: label }),
+  ]));
+  bodyEl.append(el("div", { style: "color:var(--muted); font-size:12px; margin-top:2px;", text: subText }));
+
+  // Gradient bar with a marker at the percentile (only when we have stats)
+  if (!hasIdeal && pct != null) {
+    const bar = el("div", { style: "position:relative; height:10px; border-radius:6px; margin:12px 0 4px; background:linear-gradient(90deg,#9b6b3a,#c98a3a,#3aa76d,#3aa76d,#3a7bd5,#2b5fb0);" });
+    bar.append(el("div", { style: `position:absolute; top:-3px; left:${Math.max(0, Math.min(100, pct))}%; transform:translateX(-50%); width:4px; height:16px; background:var(--fg); border-radius:2px; box-shadow:0 0 0 2px var(--bg);` }));
+    bodyEl.append(bar);
+    bodyEl.append(el("div", { style: "display:flex; justify-content:space-between; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:0.04em;" }, [
+      el("span", { text: "Low" }), el("span", { text: "Normal" }), el("span", { text: "High" }),
+    ]));
+  }
+
+  // Ideal-range editor
+  const minIn = el("input", { type: "number", step: "any", placeholder: "min", value: r.idealFlowMin ?? "", style: "width:80px;" });
+  const maxIn = el("input", { type: "number", step: "any", placeholder: "max", value: r.idealFlowMax ?? "", style: "width:80px;" });
+  const save = async () => {
+    const lo = parseFloat(minIn.value), hi = parseFloat(maxIn.value);
+    if (minIn.value !== "" && maxIn.value !== "" && (!isFinite(lo) || !isFinite(hi) || lo >= hi)) { toast("Enter min < max"); return; }
+    r.idealFlowMin = minIn.value === "" ? null : lo;
+    r.idealFlowMax = maxIn.value === "" ? null : hi;
+    await dbPut(state.db, "rivers", r);
+    await reload();
+    renderFlowLevel(r, card);
+    if (state.tab === "rivers") { renderWatersSections(); renderBrowseList(); }
+    toast("Ideal range saved");
+  };
+  bodyEl.append(el("div", { style: "margin-top:12px; padding-top:10px; border-top:1px solid var(--line);" }, [
+    el("div", { style: "font-size:12px; color:var(--muted); margin-bottom:6px;", text: "Your ideal flow (cfs) — overrides the percentile read" }),
+    el("div", { style: "display:flex; gap:8px; align-items:center;" }, [
+      minIn, el("span", { style: "color:var(--muted);", text: "–" }), maxIn,
+      el("button", { class: "btn secondary", style: "margin:0; padding:8px 12px;", text: "Save", onclick: (e) => { e.preventDefault(); save(); } }),
+    ]),
+  ]));
 }
 
 function buildConditionsGrid(u, w, source = "usgs", waterType = "river") {
@@ -1388,6 +1553,7 @@ async function refreshRiverConditions(r, container) {
     } else {
       r.prevCFS = r.lastCFS ?? null;
       r.lastCFS = usgs.flowCFS;
+      await applyFlowPercentile(r, usgs.flowCFS);
     }
     r.lastWaterTempF = usgs.waterTempF;
     r.lastReadingAt = usgs.observedAt;
@@ -2972,6 +3138,7 @@ const FIELD_MAP = {
     favorite: "favorite", custom: "custom", water_type: "waterType",
     last_cfs: "lastCFS", prev_cfs: "prevCFS", last_elevation_ft: "lastElevationFt",
     last_water_temp_f: "lastWaterTempF", last_reading_at: "lastReadingAt",
+    last_flow_pctl: "lastFlowPctl", ideal_flow_min: "idealFlowMin", ideal_flow_max: "idealFlowMax",
     notes: "notes",
   },
   trips: {

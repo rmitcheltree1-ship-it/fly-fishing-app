@@ -21,6 +21,9 @@ create table if not exists rivers (
   last_elevation_ft double precision,
   last_water_temp_f double precision,
   last_reading_at   text,
+  last_flow_pctl    double precision,
+  ideal_flow_min    double precision,
+  ideal_flow_max    double precision,
   notes             text,
   updated_at        timestamptz default now(),
   deleted           boolean default false
@@ -29,6 +32,9 @@ create table if not exists rivers (
 -- If the rivers table already exists from an earlier run, add the new columns:
 alter table rivers add column if not exists water_type        text;
 alter table rivers add column if not exists last_elevation_ft double precision;
+alter table rivers add column if not exists last_flow_pctl    double precision;
+alter table rivers add column if not exists ideal_flow_min    double precision;
+alter table rivers add column if not exists ideal_flow_max    double precision;
 
 -- ───────────────────────── TRIPS ──────────────────────────
 create table if not exists trips (
