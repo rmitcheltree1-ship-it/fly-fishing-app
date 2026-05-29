@@ -51,9 +51,13 @@ create table if not exists trips (
   notes           text,
   memo_count      integer,
   data_source     text,
+  gear_uids       text,
   updated_at      timestamptz default now(),
   deleted         boolean default false
 );
+
+-- If the trips table already exists from an earlier run, add the new column:
+alter table trips add column if not exists gear_uids text;
 
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
@@ -87,18 +91,34 @@ create table if not exists leaders (
   deleted    boolean default false
 );
 
+-- ───────────────────────── GEAR ───────────────────────────
+create table if not exists gear (
+  id         text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  name       text,
+  type       text,
+  brand      text,
+  notes      text,
+  retired    boolean default false,
+  updated_at timestamptz default now(),
+  deleted    boolean default false
+);
+
 -- ───────────── Row Level Security: you only ever see your own data ─────────────
 alter table rivers  enable row level security;
 alter table trips   enable row level security;
 alter table flies   enable row level security;
 alter table leaders enable row level security;
+alter table gear    enable row level security;
 
 drop policy if exists "own rivers"  on rivers;
 drop policy if exists "own trips"   on trips;
 drop policy if exists "own flies"   on flies;
 drop policy if exists "own leaders" on leaders;
+drop policy if exists "own gear"    on gear;
 
 create policy "own rivers"  on rivers  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own trips"   on trips   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own flies"   on flies   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own leaders" on leaders for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own gear"    on gear    for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

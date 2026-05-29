@@ -128,7 +128,10 @@ const SUPABASE_URL = "https://lauhleqlrzewxfdtxkyp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdWhsZXFscnpld3hmZHR4a3lwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5OTgyOTQsImV4cCI6MjA5NTU3NDI5NH0.YH7mkcaab-iFTHFTz-z_0eRjEEFVe5kSx_UPsOax0M4";
 
 // Stores that mirror to the cloud. (memos + meta stay device-local.)
-const SYNCED_STORES = ["rivers", "trips", "flies", "leaders"];
+const SYNCED_STORES = ["rivers", "trips", "flies", "leaders", "gear"];
+
+// Gear categories tracked per the user's setup (rods, waders, boots).
+const GEAR_TYPES = ["Rod", "Waders", "Boots", "Other"];
 
 // Baseline timestamp stamped onto freshly-seeded default data, so that a genuine
 // cloud edit (always newer) wins over a default that a new device just re-seeded.
@@ -151,8 +154,8 @@ function seedLeaderUid(l) { return `seed-l-${slug(l.name)}`; }
 // ---------- IndexedDB ----------
 
 const DB_NAME = "flyfish-db";
-const DB_VERSION = 1;
-const STORES = ["rivers", "trips", "memos", "flies", "leaders", "meta"];
+const DB_VERSION = 2; // v2 adds the "gear" store
+const STORES = ["rivers", "trips", "memos", "flies", "leaders", "gear", "meta"];
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -530,6 +533,7 @@ const state = {
   trips: [],
   flies: [],
   leaders: [],
+  gear: [],
   filters: {
     riverSearch: "",
     flyType: null,
@@ -546,6 +550,7 @@ async function reload() {
   state.trips = (await dbGetAll(state.db, "trips")).filter(t => !t.deleted).sort((a,b) => (b.date||0) - (a.date||0));
   state.flies = (await dbGetAll(state.db, "flies")).filter(f => !f.deleted);
   state.leaders = (await dbGetAll(state.db, "leaders")).filter(l => !l.deleted);
+  state.gear = (await dbGetAll(state.db, "gear")).filter(g => !g.deleted);
 }
 
 // ---------- rendering ----------
@@ -604,6 +609,7 @@ const ICONS = {
   map: "M9 3L3 5v16l6-2 6 2 6-2V3l-6 2-6-2zm0 2.2l6 2v13.6l-6-2V5.2z",
   camera: "M9 3l-2 3H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-3l-2-3H9zm3 5a5 5 0 110 10 5 5 0 010-10z",
   timer: "M12 2a10 10 0 100 20A10 10 0 0012 2zm0 2a8 8 0 110 16A8 8 0 0112 4zm1 5v5.5l3.5 2-.9 1.7L11 16V9h2z",
+  gear: "M12 8a4 4 0 100 8 4 4 0 000-8zm0 2a2 2 0 110 4 2 2 0 010-4zm7.4 3a7.6 7.6 0 000-2l2-1.5-2-3.4-2.3 1a7.5 7.5 0 00-1.7-1l-.4-2.5h-4l-.4 2.5a7.5 7.5 0 00-1.7 1l-2.3-1-2 3.4L4.6 11a7.6 7.6 0 000 2l-2 1.5 2 3.4 2.3-1c.5.4 1.1.7 1.7 1l.4 2.5h4l.4-2.5c.6-.3 1.2-.6 1.7-1l2.3 1 2-3.4-2-1.5z",
 };
 
 function flyTypeIcon(t) {
@@ -1210,6 +1216,12 @@ function renderTrips() {
   setHeader("Trips", `${state.trips.length} logged`, [
     el("button", {
       class: "icon-btn",
+      "aria-label": "Gear",
+      html: icon(ICONS.gear, 18),
+      onclick: () => openGearSheet(),
+    }),
+    el("button", {
+      class: "icon-btn",
       "aria-label": "New trip",
       html: icon(ICONS.plus, 18),
       onclick: () => newTripModal(),
@@ -1241,22 +1253,188 @@ function renderTrips() {
   }
 }
 
-async function newTripModal(prefRiver) {
+// ---------- gear ----------
+
+// Usage is derived from trips (never a stored counter), so it can't drift.
+function gearUsage(uid) {
+  const used = state.trips.filter(t => (t.gearUids || []).includes(uid));
+  const last = used.reduce((m, t) => Math.max(m, t.date || 0), 0);
+  return { count: used.length, last };
+}
+
+function gearNames(t) {
+  return (t.gearUids || [])
+    .map(uid => state.gear.find(g => g.uid === uid)?.name)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function openGearSheet() {
+  const body = el("div");
+
+  body.append(el("button", {
+    class: "btn", style: "margin-bottom:10px;",
+    html: `${icon(ICONS.plus, 18)} <span>Add gear</span>`,
+    onclick: (e) => { e.preventDefault(); openGearEdit(); },
+  }));
+
+  const active = state.gear.filter(g => !g.retired);
+  const retired = state.gear.filter(g => g.retired);
+
+  if (!state.gear.length) {
+    body.append(el("div", { class: "empty", html: `${icon(ICONS.gear, 52)}<h3>No gear yet</h3><p>Add your rods, waders, and boots. We'll track how many trips you've used each one and when you last took it out.</p>` }));
+    openModal(modalShell("Gear", body));
+    return;
+  }
+
+  const card = el("div", { class: "card" });
+  const order = { Rod: 0, Waders: 1, Boots: 2, Other: 3 };
+  const sorted = [...active].sort((a, b) => (order[a.type] ?? 9) - (order[b.type] ?? 9) || a.name.localeCompare(b.name));
+  sorted.forEach((g, i) => {
+    const u = gearUsage(g.uid);
+    const meta = `${g.type}${g.brand ? " · " + g.brand : ""} · ${u.count} trip${u.count === 1 ? "" : "s"}${u.last ? " · last " + new Date(u.last).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}`;
+    const row = el("div", {
+      class: "row", style: `cursor:pointer; align-items:flex-start;${i ? " border-top:1px solid var(--line);" : ""} padding:10px 0;`,
+      onclick: () => openGearEdit(g),
+    }, [
+      el("div", {}, [
+        el("div", { style: "font-weight:600;", text: g.name }),
+        el("div", { style: "color:var(--muted); font-size:12px; margin-top:2px;", text: meta }),
+      ]),
+      el("span", { style: "color:var(--muted);", html: icon(ICONS.scissors, 16) }),
+    ]);
+    card.append(row);
+  });
+  body.append(card);
+
+  if (retired.length) {
+    body.append(el("div", { style: "color:var(--muted); font-size:12px; margin:14px 0 6px; text-transform:uppercase; letter-spacing:0.05em;", text: "Retired" }));
+    const rcard = el("div", { class: "card", style: "opacity:0.6;" });
+    retired.forEach((g, i) => {
+      const u = gearUsage(g.uid);
+      rcard.append(el("div", {
+        class: "row", style: `cursor:pointer;${i ? " border-top:1px solid var(--line);" : ""} padding:10px 0;`,
+        onclick: () => openGearEdit(g),
+      }, [
+        el("span", { text: g.name }),
+        el("span", { class: "value", text: `${g.type} · ${u.count} trips` }),
+      ]));
+    });
+    body.append(rcard);
+  }
+
+  openModal(modalShell("Gear", body));
+}
+
+function openGearEdit(existing = null) {
+  const s = {
+    name: existing?.name ?? "",
+    type: existing?.type ?? "Rod",
+    brand: existing?.brand ?? "",
+    notes: existing?.notes ?? "",
+    retired: existing?.retired ?? false,
+  };
+  const body = el("div");
+
+  const typeSel = el("select", { onchange: (e) => s.type = e.target.value });
+  for (const t of GEAR_TYPES) {
+    const o = el("option", { value: t, text: t });
+    if (t === s.type) o.selected = true;
+    typeSel.append(o);
+  }
+
+  body.append(
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Name" }),
+      el("input", { type: "text", value: s.name, placeholder: "e.g. Sage R8 5wt", oninput: (e) => s.name = e.target.value }),
+    ]),
+    el("div", { class: "form-group" }, [el("label", { text: "Type" }), typeSel]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Brand / model (optional)" }),
+      el("input", { type: "text", value: s.brand, placeholder: "e.g. Simms G3", oninput: (e) => s.brand = e.target.value }),
+    ]),
+    el("div", { class: "form-group" }, [
+      el("label", { text: "Notes (optional)" }),
+      el("textarea", { rows: 3, oninput: (e) => s.notes = e.target.value }, s.notes),
+    ]),
+  );
+
+  if (existing) {
+    const retireWrap = el("label", { style: "display:flex; align-items:center; gap:8px; margin:4px 0 8px; color:var(--muted);" });
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = s.retired;
+    cb.onchange = (e) => s.retired = e.target.checked;
+    retireWrap.append(cb, el("span", { text: "Retired (hide from trip picker, keep history)" }));
+    body.append(retireWrap);
+
+    if (gearUsage(existing.uid).count) {
+      const u = gearUsage(existing.uid);
+      body.append(el("div", { class: "card", style: "margin-bottom:8px;" }, [
+        el("div", { class: "row" }, [el("span", { class: "label", text: "Trips" }), el("span", { class: "value", text: String(u.count) })]),
+        el("div", { class: "row" }, [el("span", { class: "label", text: "Last used" }), el("span", { class: "value", text: u.last ? new Date(u.last).toLocaleDateString() : "—" })]),
+      ]));
+    }
+  }
+
+  const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    existing
+      ? el("button", { class: "btn danger", text: "Delete", onclick: async (e) => {
+          e.preventDefault();
+          if (!confirm(`Delete ${existing.name}? Past trips keep their record of it.`)) return;
+          await softDelete("gear", existing.id);
+          await reload();
+          closeModal();
+          openGearSheet();
+          toast("Gear deleted");
+        }})
+      : el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); closeModal(); openGearSheet(); } }),
+    el("button", { class: "btn", text: existing ? "Save" : "Add gear", onclick: async (e) => {
+      e.preventDefault();
+      if (!s.name.trim()) { toast("Name required"); return; }
+      await dbPut(state.db, "gear", {
+        ...(existing || {}),
+        name: s.name.trim(),
+        type: s.type,
+        brand: s.brand.trim(),
+        notes: s.notes.trim(),
+        retired: !!s.retired,
+      });
+      await reload();
+      closeModal();
+      openGearSheet();
+      toast(existing ? "Gear saved" : "Gear added");
+    }}),
+  ]);
+
+  openModal(modalShell(existing ? "Edit gear" : "Add gear", body, footer));
+}
+
+// Local datetime-local string (YYYY-MM-DDTHH:mm) for an epoch-ms value.
+function toLocalInput(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function newTripModal(prefRiver, editTrip = null) {
   const formState = {
-    riverId: prefRiver?.id ?? state.rivers[0]?.id ?? null,
-    date: new Date().toISOString().slice(0,16),
-    locationLabel: "",
-    fliesUsed: "",
-    leaderSetup: "",
-    fishLanded: 0,
-    biggest: "",
-    notes: "",
-    usgs: null,
-    weather: null,
-    coords: null,
-    dataSource: "usgs",
+    riverId: editTrip?.riverId ?? prefRiver?.id ?? state.rivers[0]?.id ?? null,
+    date: editTrip ? toLocalInput(editTrip.date) : new Date().toISOString().slice(0,16),
+    locationLabel: editTrip?.locationLabel ?? "",
+    fliesUsed: editTrip?.fliesUsed ?? "",
+    leaderSetup: editTrip?.leaderSetup ?? "",
+    fishLanded: editTrip?.fishLanded ?? 0,
+    biggest: editTrip?.biggest != null ? String(editTrip.biggest) : "",
+    notes: editTrip?.notes ?? "",
+    // In edit mode, seed the snapshot from the saved trip so conditions are
+    // preserved on save unless the user re-snapshots.
+    usgs: editTrip ? { flowCFS: editTrip.flowCFS, waterTempF: editTrip.waterTempF, gaugeHeightFt: editTrip.gaugeHeightFt } : null,
+    weather: editTrip ? { airTempF: editTrip.airTempF, windMph: editTrip.windMph, windDir: editTrip.windDir, pressureHpa: editTrip.pressureHpa, precipIn: editTrip.precipIn, cloudPct: editTrip.cloudPct, humidity: editTrip.humidity } : null,
+    coords: editTrip ? { lat: editTrip.lat, lon: editTrip.lon } : null,
+    dataSource: editTrip?.dataSource ?? "usgs",
     pendingMemos: [], // { blob, mime, duration, label, name }
   };
+  const selectedGear = new Set(editTrip?.gearUids ?? []);
 
   const body = el("div");
 
@@ -1278,15 +1456,16 @@ async function newTripModal(prefRiver) {
     el("div", { class: "form-group" }, [el("label", { text: "River" }), riverSel]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Spot / access (optional)" }),
-      el("input", { type: "text", placeholder: "e.g. Below Cheesman Dam", oninput: (e) => formState.locationLabel = e.target.value }),
+      el("input", { type: "text", value: formState.locationLabel, placeholder: "e.g. Below Cheesman Dam", oninput: (e) => formState.locationLabel = e.target.value }),
     ]),
   );
 
   // Conditions snapshot
   const condCard = el("div", { class: "card" });
+  if (editTrip) condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource));
   const snapBtn = el("button", {
     class: "btn secondary",
-    html: `${icon(ICONS.refresh, 18)} <span>Snapshot current conditions</span>`,
+    html: `${icon(ICONS.refresh, 18)} <span>${editTrip ? "Re-snapshot conditions" : "Snapshot current conditions"}</span>`,
     onclick: async (e) => {
       e.preventDefault();
       snapBtn.disabled = true;
@@ -1317,24 +1496,48 @@ async function newTripModal(prefRiver) {
   const stepperRow = el("div", { class: "form-row" }, [
     el("div", { class: "form-group" }, [
       el("label", { text: "Fish landed" }),
-      el("input", { type: "number", min: 0, value: 0, oninput: (e) => formState.fishLanded = parseInt(e.target.value) || 0 }),
+      el("input", { type: "number", min: 0, value: String(formState.fishLanded), oninput: (e) => formState.fishLanded = parseInt(e.target.value) || 0 }),
     ]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Biggest (in)" }),
-      el("input", { type: "number", step: "0.1", oninput: (e) => formState.biggest = e.target.value }),
+      el("input", { type: "number", step: "0.1", value: formState.biggest, oninput: (e) => formState.biggest = e.target.value }),
     ]),
   ]);
   body.append(
     stepperRow,
     el("div", { class: "form-group" }, [
       el("label", { text: "Flies used" }),
-      el("input", { type: "text", placeholder: "e.g. PT #18, Zebra #20", oninput: (e) => formState.fliesUsed = e.target.value }),
+      el("input", { type: "text", value: formState.fliesUsed, placeholder: "e.g. PT #18, Zebra #20", oninput: (e) => formState.fliesUsed = e.target.value }),
     ]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Leader / tippet" }),
-      el("input", { type: "text", placeholder: "e.g. 9ft 3X + 18in 5X", oninput: (e) => formState.leaderSetup = e.target.value }),
+      el("input", { type: "text", value: formState.leaderSetup, placeholder: "e.g. 9ft 3X + 18in 5X", oninput: (e) => formState.leaderSetup = e.target.value }),
     ]),
   );
+
+  // Gear used — tappable chips (rods, waders, boots…)
+  const gearCard = el("div", { class: "card" });
+  gearCard.append(el("h3", { text: "Gear used" }));
+  const activeGear = state.gear.filter(g => !g.retired);
+  if (!activeGear.length) {
+    gearCard.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "No gear yet — add rods, waders, and boots with the Gear button on the Trips screen." }));
+  } else {
+    const gearChips = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
+    for (const g of activeGear) {
+      const chip = el("button", {
+        class: "chip" + (selectedGear.has(g.uid) ? " active" : ""),
+        text: g.name,
+        onclick: (e) => {
+          e.preventDefault();
+          if (selectedGear.has(g.uid)) { selectedGear.delete(g.uid); chip.classList.remove("active"); }
+          else { selectedGear.add(g.uid); chip.classList.add("active"); }
+        },
+      });
+      gearChips.append(chip);
+    }
+    gearCard.append(gearChips);
+  }
+  body.append(gearCard);
 
   // Voice memos
   const memoCard = el("div", { class: "card" });
@@ -1349,20 +1552,21 @@ async function newTripModal(prefRiver) {
   body.append(
     el("div", { class: "form-group" }, [
       el("label", { text: "Notes" }),
-      el("textarea", { rows: 4, oninput: (e) => formState.notes = e.target.value }),
+      el("textarea", { rows: 4, oninput: (e) => formState.notes = e.target.value }, editTrip?.notes || ""),
     ])
   );
 
   const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
     el("button", { class: "btn secondary", text: "Cancel", onclick: (e) => { e.preventDefault(); stopRecordingIfAny(); closeModal(); } }),
     el("button", {
-      class: "btn", text: "Save trip",
+      class: "btn", text: editTrip ? "Save changes" : "Save trip",
       onclick: async (e) => {
         e.preventDefault();
         stopRecordingIfAny();
         const river = state.rivers.find(r => r.id === formState.riverId);
         if (!river) { toast("Pick a river"); return; }
-        const tripId = await dbPut(state.db, "trips", {
+        const record = {
+          ...(editTrip || {}),  // preserve id/uid + any fields we don't touch
           date: new Date(formState.date).getTime(),
           riverId: river.id,
           riverUid: river.uid ?? null,
@@ -1385,21 +1589,23 @@ async function newTripModal(prefRiver) {
           fishLanded: formState.fishLanded,
           biggest: parseFloat(formState.biggest) || null,
           notes: formState.notes,
-          memoCount: formState.pendingMemos.length,
+          gearUids: [...selectedGear],
+          memoCount: (editTrip?.memoCount || 0) + formState.pendingMemos.length,
           dataSource: formState.dataSource || "usgs",
-        });
+        };
+        const tripId = await dbPut(state.db, "trips", record);
         for (const m of formState.pendingMemos) {
           await dbPut(state.db, "memos", { tripId, blob: m.blob, mime: m.mime, duration: m.duration, label: m.label, createdAt: Date.now() });
         }
         await reload();
         renderTrips();
         closeModal();
-        toast("Trip saved");
+        toast(editTrip ? "Trip updated" : "Trip saved");
       }
     })
   ]);
 
-  openModal(modalShell("New trip", body, footer));
+  openModal(modalShell(editTrip ? "Edit trip" : "New trip", body, footer));
 }
 
 // ---------- recording ----------
@@ -1516,6 +1722,7 @@ async function openTrip(id) {
     el("h3", { text: "On the water" }),
     rowKV("Flies used", t.fliesUsed || "—"),
     rowKV("Leader", t.leaderSetup || "—"),
+    rowKV("Gear", gearNames(t) || "—"),
     rowKV("Fish landed", String(t.fishLanded || 0)),
     rowKV("Biggest", t.biggest ? `${t.biggest} in` : "—"),
   ]));
@@ -1539,6 +1746,11 @@ async function openTrip(id) {
   }
 
   const footer = el("div", { style: "display:flex; gap:8px; margin-top:8px;" }, [
+    el("button", { class: "btn secondary", text: "Edit trip", onclick: (e) => {
+      e.preventDefault();
+      closeModal();
+      newTripModal(null, t);
+    }}),
     el("button", { class: "btn danger", text: "Delete trip", onclick: async (e) => {
       e.preventDefault();
       if (!confirm("Delete this trip and its voice memos?")) return;
@@ -2057,6 +2269,29 @@ function endSessionSheet() {
     flyChipsEl,
   ]));
 
+  // Gear — tappable chips (active gear only)
+  const selectedGear = new Set();
+  const activeGear = state.gear.filter(g => !g.retired);
+  if (activeGear.length) {
+    const gearChipsEl = el("div", { class: "chips", style: "flex-wrap:wrap; padding-bottom:0;" });
+    for (const g of activeGear) {
+      const chip = el("button", {
+        class: "chip",
+        text: g.name,
+        onclick: (e) => {
+          e.preventDefault();
+          if (selectedGear.has(g.uid)) { selectedGear.delete(g.uid); chip.classList.remove("active"); }
+          else { selectedGear.add(g.uid); chip.classList.add("active"); }
+        },
+      });
+      gearChipsEl.append(chip);
+    }
+    body.append(el("div", { class: "form-group" }, [
+      el("label", { text: "Gear used — tap to select" }),
+      gearChipsEl,
+    ]));
+  }
+
   // Notes
   const notesInput = el("textarea", { rows: 3, placeholder: "Hatches, tactics, water clarity…" });
   body.append(el("div", { class: "form-group" }, [
@@ -2077,6 +2312,7 @@ function endSessionSheet() {
           fishCount: parseInt(countInput.value) || 0,
           biggest: parseFloat(biggestInput.value) || null,
           fliesUsed,
+          gearUids: [...selectedGear],
           notes: notesInput.value.trim(),
         });
       },
@@ -2111,6 +2347,7 @@ async function finishSession(picks) {
     cloudPct:     sess.weather?.cloudPct  ?? null,
     humidity:     sess.weather?.humidity  ?? null,
     fliesUsed:    picks.fliesUsed,
+    gearUids:     picks.gearUids || [],
     leaderSetup:  "",
     fishLanded:   picks.fishCount,
     biggest:      picks.biggest,
@@ -2168,7 +2405,16 @@ const FIELD_MAP = {
     name: "name", situation: "situation", rod: "rod", length: "length",
     taper: "taper", tippet: "tippet", diagram: "diagram", tips: "tips",
   },
+  gear: {
+    name: "name", type: "type", brand: "brand", notes: "notes", retired: "retired",
+  },
 };
+
+function safeParseArr(s) {
+  if (Array.isArray(s)) return s;
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch (_) { return []; }
+}
 
 function toRemote(store, rec, userId) {
   const map = FIELD_MAP[store];
@@ -2179,6 +2425,8 @@ function toRemote(store, rec, userId) {
     deleted: !!rec.deleted,
   };
   for (const [col, key] of Object.entries(map)) out[col] = rec[key] ?? null;
+  // trips carry a list of gear uids — stored remotely as JSON text.
+  if (store === "trips") out.gear_uids = JSON.stringify(rec.gearUids || []);
   return out;
 }
 
@@ -2190,6 +2438,7 @@ function fromRemote(store, row) {
     deleted: !!row.deleted,
   };
   for (const [col, key] of Object.entries(map)) out[key] = row[col] ?? null;
+  if (store === "trips") out.gearUids = safeParseArr(row.gear_uids);
   return out;
 }
 
