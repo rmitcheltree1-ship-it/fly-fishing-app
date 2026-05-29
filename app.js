@@ -29,6 +29,34 @@ const CO_EXPANSION_RIVERS = [
   { name: "Clear Creek",        state: "CO", section: "Clear Creek Canyon",      siteCode: "06716500", lat: 39.7567, lon: -105.2236 },
 ];
 
+// ---------- Southeast US waters (migration v6) ----------
+// Carolinas starter set so an East-Coast angler has live content out of the box.
+// Verified against the USGS site service (stream + lake gauges). waterType:
+// "river" (flowing, CFS) or "still" (lake/reservoir/pond, surface elevation).
+// Ponds / un-gauged lakes carry an empty siteCode and show weather only.
+const SOUTHEAST_WATERS = [
+  // ----- Rivers (flowing) -----
+  { name: "Catawba River",     state: "SC", section: "Landsford Canal State Park", siteCode: "02147020", lat: 34.7886, lon: -80.8779, waterType: "river" },
+  { name: "Saluda River",      state: "SC", section: "Lower Saluda (below Lake Murray Dam)", siteCode: "02168504", lat: 34.0510, lon: -81.2095, waterType: "river" },
+  { name: "Chattooga River",   state: "SC", section: "Wild & Scenic (Sections III–IV)", siteCode: "02177000", lat: 34.8138, lon: -83.3064, waterType: "river" },
+  { name: "Davidson River",    state: "NC", section: "Pisgah National Forest",     siteCode: "03441000", lat: 35.2731, lon: -82.7058, waterType: "river" },
+  { name: "Watauga River",     state: "NC", section: "Valle Crucis / Sugar Grove", siteCode: "03479000", lat: 36.2392, lon: -81.8222, waterType: "river" },
+  { name: "Nantahala River",   state: "NC", section: "Delayed Harvest (Hewitt)",   siteCode: "03505550", lat: 35.3050, lon: -83.6522, waterType: "river" },
+  { name: "Tuckasegee River",  state: "NC", section: "Bryson City (Delayed Harvest)", siteCode: "03513000", lat: 35.4275, lon: -83.4469, waterType: "river" },
+  { name: "French Broad River",state: "NC", section: "Asheville",                  siteCode: "03451500", lat: 35.6089, lon: -82.5781, waterType: "river" },
+  // ----- Lakes & reservoirs (USGS gauged — surface elevation) -----
+  { name: "Lake Murray",       state: "SC", section: "near Columbia (dam)",        siteCode: "02168500", lat: 34.0521, lon: -81.2207, waterType: "still" },
+  { name: "Lake Marion",       state: "SC", section: "Santee Cooper (Pineville)",  siteCode: "02171000", lat: 33.4495, lon: -80.1644, waterType: "still" },
+  { name: "Lake Moultrie",     state: "SC", section: "Santee Cooper (Pinopolis)",  siteCode: "02172000", lat: 33.2445, lon: -79.9916, waterType: "still" },
+  { name: "Hartwell Lake",     state: "SC", section: "near Anderson",              siteCode: "02187010", lat: 34.5083, lon: -82.8553, waterType: "still" },
+  { name: "Jordan Lake",       state: "NC", section: "B. Everett Jordan (dam)",    siteCode: "02098197", lat: 35.6547, lon: -79.0683, waterType: "still" },
+  { name: "Falls Lake",        state: "NC", section: "above dam (Falls)",          siteCode: "02087182", lat: 35.9411, lon: -78.5833, waterType: "still" },
+  // ----- Popular still waters with no real-time gauge (weather only) -----
+  { name: "Lake Norman",       state: "NC", section: "Catawba chain",              siteCode: "", lat: 35.5000, lon: -80.9500, waterType: "still" },
+  { name: "Lake James",        state: "NC", section: "Catawba headwaters",         siteCode: "", lat: 35.7331, lon: -81.8876, waterType: "still" },
+  { name: "Lake Wateree",      state: "SC", section: "Catawba River chain",        siteCode: "", lat: 34.4500, lon: -80.8500, waterType: "still" },
+];
+
 // ---------- seed data ----------
 
 const SEED_RIVERS = [
@@ -429,16 +457,44 @@ async function seedIfNeeded(db) {
 
     await dbPut(db, "meta", { id: 5, value: true });
   }
+
+  // Migration v6 — add Southeast US starter waters (rivers + lakes + ponds) and
+  // stamp every existing river as a flowing "river" so stillwater is opt-in.
+  const v6 = await dbGet(db, "meta", 6);
+  if (!v6) {
+    // Backfill waterType on existing rivers (absent === flowing river).
+    for (const r of await dbGetAll(db, "rivers")) {
+      if (r.waterType === undefined) {
+        await dbPut(db, "rivers", { ...r, waterType: "river", _fromSync: true });
+      }
+    }
+    // Insert the new Southeast waters if not already present (match by uid).
+    const existingUids = new Set((await dbGetAll(db, "rivers")).map(r => r.uid));
+    for (const r of SOUTHEAST_WATERS) {
+      const uid = seedRiverUid(r);
+      if (!existingUids.has(uid)) {
+        await dbPut(db, "rivers", {
+          ...r, favorite: false, custom: false,
+          lastCFS: null, prevCFS: null, lastElevationFt: null,
+          lastWaterTempF: null, lastReadingAt: null,
+          uid, updatedAt: SEED_TS, deleted: false, _fromSync: true,
+        });
+      }
+    }
+    await dbPut(db, "meta", { id: 6, value: true });
+  }
 }
 
 // ---------- API calls ----------
 
 async function fetchUSGS(siteCode) {
-  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&parameterCd=00060,00010,00065&siteStatus=all`;
+  // 00060 flow · 00010 water temp · 00065 gauge height · 00062 reservoir
+  // surface elevation · 00054 reservoir storage (lakes report the latter two).
+  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&parameterCd=00060,00010,00065,00062,00054&siteStatus=all`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`USGS ${r.status}`);
   const data = await r.json();
-  const out = { flowCFS: null, waterTempF: null, gaugeHeightFt: null, observedAt: null };
+  const out = { flowCFS: null, waterTempF: null, gaugeHeightFt: null, elevationFt: null, storageAf: null, observedAt: null };
   const series = data?.value?.timeSeries ?? [];
   for (const s of series) {
     const code = s?.variable?.variableCode?.[0]?.value;
@@ -449,6 +505,8 @@ async function fetchUSGS(siteCode) {
     if (code === "00060") out.flowCFS = v;
     else if (code === "00010") out.waterTempF = v * 9/5 + 32;
     else if (code === "00065") out.gaugeHeightFt = v;
+    else if (code === "00062") out.elevationFt = v;
+    else if (code === "00054") out.storageAf = v;
     if (!out.observedAt) out.observedAt = latest.dateTime;
   }
   return out;
@@ -476,11 +534,12 @@ function titleCase(str) {
   return str.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()).replace(/,\s*$/, "");
 }
 
-async function searchUSGSSites(stateCd, nameQuery) {
+async function searchUSGSSites(stateCd, nameQuery, siteType = "ST") {
   // Site service returns compact RDB (tab-delimited) — ~50KB vs 2MB for the IV endpoint,
   // which is what was timing out on mobile. Omit siteName param (it doesn't exist on this
   // endpoint — that was causing the earlier 400). Fetch all sites, filter client-side.
-  const url = `https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=${encodeURIComponent(stateCd)}&siteType=ST&hasDataTypeCd=iv&siteStatus=active`;
+  // siteType "ST" = stream/river, "LK" = lake/reservoir.
+  const url = `https://waterservices.usgs.gov/nwis/site/?format=rdb&stateCd=${encodeURIComponent(stateCd)}&siteType=${encodeURIComponent(siteType)}&hasDataTypeCd=iv&siteStatus=active`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`USGS ${r.status}`);
   const text = await r.text();
@@ -764,8 +823,13 @@ $("#tabs").addEventListener("click", (e) => {
 
 function buildHeroCard(r) {
   const [c1, c2] = CARD_GRADIENTS[r.id % CARD_GRADIENTS.length];
-  const trend = flowTrend(r.lastCFS, r.prevCFS);
-  const cfsStr = r.lastCFS != null ? Math.round(r.lastCFS).toLocaleString() : "—";
+  const isStill = r.waterType === "still";
+  const trend = isStill ? "steady" : flowTrend(r.lastCFS, r.prevCFS);
+  const bigVal = isStill
+    ? (r.lastElevationFt != null ? Math.round(r.lastElevationFt).toLocaleString() : "—")
+    : (r.lastCFS != null ? Math.round(r.lastCFS).toLocaleString() : "—");
+  const bigUnit = isStill ? "FT" : "CFS";
+  const hasBig = isStill ? r.lastElevationFt != null : r.lastCFS != null;
   const trendLabel = trend === "rising" ? "↑ rising" : trend === "falling" ? "↓ falling" : "";
 
   const topRow = el("div", { style: "display:flex; justify-content:space-between; align-items:flex-start;" }, [
@@ -790,8 +854,8 @@ function buildHeroCard(r) {
 
   const cfsBlock = el("div", {}, [
     el("div", { class: "h-cfs-row" }, [
-      el("span", { class: "h-cfs", text: cfsStr }),
-      r.lastCFS != null ? el("span", { class: "h-cfs-unit", text: "CFS" }) : null,
+      el("span", { class: "h-cfs", text: bigVal }),
+      hasBig ? el("span", { class: "h-cfs-unit", text: bigUnit }) : null,
     ]),
     trendLabel ? el("div", { class: "h-trend", text: trendLabel }) : null,
   ]);
@@ -845,10 +909,10 @@ function buildRiverHero() {
 }
 
 function renderRivers() {
-  setHeader("Rivers", "Western US · tap for live conditions", [
+  setHeader("Waters", "Rivers & stillwater · tap for live conditions", [
     el("button", {
       class: "icon-btn",
-      "aria-label": "Add river",
+      "aria-label": "Add water",
       html: icon(ICONS.plus, 18),
       onclick: () => addRiverModal(),
     }),
@@ -881,14 +945,23 @@ function renderRivers() {
 
   renderRiverList();
 
-  // Background-refresh any starred river that has no CFS data yet
-  const needData = state.rivers.filter(r => r.favorite && r.lastCFS == null);
+  // Background-refresh any starred, gauged water that has no cached reading yet.
+  const needData = state.rivers.filter(r => {
+    if (!r.favorite || !r.siteCode) return false;
+    return r.waterType === "still" ? r.lastElevationFt == null : r.lastCFS == null;
+  });
   needData.forEach(r => {
     const fetcher = r.source === "dwr" ? fetchDWR(r.siteCode) : fetchUSGS(r.siteCode);
     fetcher.then(async usgs => {
-      if (!usgs?.flowCFS) return;
-      r.prevCFS = null;
-      r.lastCFS = usgs.flowCFS;
+      if (!usgs) return;
+      if (r.waterType === "still") {
+        if (usgs.elevationFt == null && usgs.waterTempF == null) return;
+        r.lastElevationFt = usgs.elevationFt;
+      } else {
+        if (usgs.flowCFS == null) return;
+        r.prevCFS = null;
+        r.lastCFS = usgs.flowCFS;
+      }
       r.lastWaterTempF = usgs.waterTempF;
       r.lastReadingAt = usgs.observedAt;
       await dbPut(state.db, "rivers", r);
@@ -927,7 +1000,8 @@ function renderRiverList() {
 }
 
 function riverRow(r) {
-  const trend = flowTrend(r.lastCFS, r.prevCFS);
+  const isStill = r.waterType === "still";
+  const trend = isStill ? "steady" : flowTrend(r.lastCFS, r.prevCFS);
   const subParts = [`${r.state}${r.section ? " · " + r.section : ""}`];
 
   const subEl = el("div", { class: "sub" }, [
@@ -950,9 +1024,9 @@ function riverRow(r) {
         renderRivers();
       },
     }),
-    r.lastCFS != null ? el("div", { class: "river-cfs" }, [
-      el("div", { class: "cfs-v", text: Math.round(r.lastCFS).toString() }),
-      el("div", { class: "cfs-u", text: "cfs" }),
+    (isStill ? r.lastElevationFt != null : r.lastCFS != null) ? el("div", { class: "river-cfs" }, [
+      el("div", { class: "cfs-v", text: Math.round(isStill ? r.lastElevationFt : r.lastCFS).toString() }),
+      el("div", { class: "cfs-u", text: isStill ? "ft" : "cfs" }),
     ]) : null,
   ]);
 
@@ -976,9 +1050,12 @@ async function openRiver(id) {
   if (!r) return;
   const body = el("div");
 
+  const gaugeLabel = r.siteCode
+    ? `${r.source === "dwr" ? "DWR" : "USGS"} ${r.siteCode}`
+    : (r.waterType === "still" ? "No gauge · weather only" : "No gauge");
   const sub = el("div", {
     style: "color:var(--muted); font-size:13px; margin-bottom:10px;",
-    text: `${r.state}${r.section ? " · " + r.section : ""} · ${r.source === "dwr" ? "DWR" : "USGS"} ${r.siteCode}`,
+    text: `${r.state}${r.section ? " · " + r.section : ""} · ${gaugeLabel}`,
   });
   body.append(sub);
 
@@ -1070,14 +1147,21 @@ function metric(label, value, unit, ic, color) {
   ]);
 }
 
-function buildConditionsGrid(u, w, source = "usgs") {
+function buildConditionsGrid(u, w, source = "usgs", waterType = "river") {
   const f = (n, d = 0) => (n == null || !isFinite(n)) ? "—" : (d === 0 ? Math.round(n).toString() : n.toFixed(d));
+  const isStill = waterType === "still";
 
-  const usgsGrid = el("div", { class: "metrics-grid" }, [
-    metric("Flow",  f(u?.flowCFS),         "cfs", ICONS.drop,   "var(--teal)"),
-    metric("Water", f(u?.waterTempF, 1),   "°F",  ICONS.thermo, "#2d6a8e"),
-    metric("Gauge", f(u?.gaugeHeightFt,2), "ft",  ICONS.ruler,  "#6a5a9e"),
-  ]);
+  const usgsGrid = isStill
+    ? el("div", { class: "metrics-grid" }, [
+        metric("Lake level", f(u?.elevationFt, 2), "ft",    ICONS.ruler,  "var(--teal)"),
+        metric("Water",      f(u?.waterTempF, 1),  "°F",    ICONS.thermo, "#2d6a8e"),
+        metric("Storage",    f(u?.storageAf),      "ac-ft", ICONS.drop,   "#6a5a9e"),
+      ])
+    : el("div", { class: "metrics-grid" }, [
+        metric("Flow",  f(u?.flowCFS),         "cfs", ICONS.drop,   "var(--teal)"),
+        metric("Water", f(u?.waterTempF, 1),   "°F",  ICONS.thermo, "#2d6a8e"),
+        metric("Gauge", f(u?.gaugeHeightFt,2), "ft",  ICONS.ruler,  "#6a5a9e"),
+      ]);
 
   const wxGrid = el("div", { class: "metrics-grid" }, [
     metric("Air",      f(w?.airTempF),    "°F",                        ICONS.sun,   "var(--gold)"),
@@ -1088,13 +1172,22 @@ function buildConditionsGrid(u, w, source = "usgs") {
     metric("Humidity", f(w?.humidity),    "%",                         ICONS.humid, "var(--teal)"),
   ]);
 
+  // A pond / un-gauged lake has no station reading — show weather only.
+  const srcLabel = source === "dwr"
+    ? "CO DWR · River"
+    : `USGS · ${isStill ? "Lake" : "River"}`;
+
   const wrap = el("div");
+  if (u) {
+    wrap.append(
+      el("div", { class: "cond-header" }, [
+        el("span", { class: "cond-src", text: srcLabel }),
+        u?.observedAt ? el("span", { class: "cond-time", text: fmtTime(u.observedAt) }) : null,
+      ]),
+      usgsGrid,
+    );
+  }
   wrap.append(
-    el("div", { class: "cond-header" }, [
-      el("span", { class: "cond-src", text: source === "dwr" ? "CO DWR · River" : "USGS · River" }),
-      u?.observedAt ? el("span", { class: "cond-time", text: fmtTime(u.observedAt) }) : null,
-    ]),
-    usgsGrid,
     el("div", { class: "cond-header" }, [
       el("span", { class: "cond-src", text: "Weather · Now" }),
       el("span", { class: "cond-time", text: "Open-Meteo" }),
@@ -1107,21 +1200,31 @@ function buildConditionsGrid(u, w, source = "usgs") {
 async function refreshRiverConditions(r, container) {
   let usgs = null, weather = null, errs = [];
   const isDWR = r.source === "dwr";
-  try {
-    usgs = isDWR ? await fetchDWR(r.siteCode) : await fetchUSGS(r.siteCode);
-  } catch (e) { errs.push((isDWR ? "DWR" : "USGS") + ": " + e.message); }
+  const isStill = r.waterType === "still";
+  // Un-gauged waters (ponds, lakes without a station) have no site code —
+  // skip the USGS call and show weather only.
+  if (r.siteCode) {
+    try {
+      usgs = isDWR ? await fetchDWR(r.siteCode) : await fetchUSGS(r.siteCode);
+    } catch (e) { errs.push((isDWR ? "DWR" : "USGS") + ": " + e.message); }
+  }
   try { weather = await fetchWeather(r.lat, r.lon); } catch (e) { errs.push("Weather: " + e.message); }
 
   container.innerHTML = "";
-  container.append(buildConditionsGrid(usgs, weather, r.source));
+  container.append(buildConditionsGrid(usgs, weather, r.source, r.waterType));
   if (errs.length) {
     container.append(el("div", { style: "color:var(--red); font-size:12px; margin-top:8px;", text: errs.join(" · ") }));
   }
 
-  // Cache on the river record; preserve previous CFS for trend arrow
+  // Cache on the river record. Rivers track CFS (with previous for the trend
+  // arrow); stillwater tracks surface elevation.
   if (usgs) {
-    r.prevCFS = r.lastCFS ?? null;
-    r.lastCFS = usgs.flowCFS;
+    if (isStill) {
+      r.lastElevationFt = usgs.elevationFt;
+    } else {
+      r.prevCFS = r.lastCFS ?? null;
+      r.lastCFS = usgs.flowCFS;
+    }
     r.lastWaterTempF = usgs.waterTempF;
     r.lastReadingAt = usgs.observedAt;
     await dbPut(state.db, "rivers", r);
@@ -1129,8 +1232,11 @@ async function refreshRiverConditions(r, container) {
   }
 }
 
+const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
+
 function addRiverModal(prefillName = "") {
-  const s = { name: prefillName, st: "CO", section: "", siteCode: "", lat: "", lon: "", source: "usgs" };
+  // kind: "river" (stream gauge) · "lake" (reservoir gauge) · "pond" (no gauge)
+  const s = { name: prefillName, st: "CO", section: "", siteCode: "", lat: "", lon: "", source: "usgs", kind: "river" };
 
   // ── Detail fields (shared between search-fill and manual) ──
   const nameInput = el("input", { type: "text", placeholder: "e.g. Arkansas River", value: s.name,
@@ -1158,7 +1264,7 @@ function addRiverModal(prefillName = "") {
     style: "width:72px; flex-shrink:0; padding-left:8px; padding-right:4px;",
     onchange: (e) => s.st = e.target.value,
   });
-  for (const st of ["CO","MT","WY","ID","UT","NM","AZ","NV","OR","WA","CA"]) {
+  for (const st of US_STATES) {
     const o = el("option", { value: st, text: st });
     if (st === s.st) o.selected = true;
     stateSelect.append(o);
@@ -1180,9 +1286,11 @@ function addRiverModal(prefillName = "") {
       searchBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Searching…</span>`;
       resultsEl.innerHTML = "";
       try {
-        // Search USGS always; for CO also search DWR in parallel
-        const tasks = [searchUSGSSites(s.st, q).catch(() => [])];
-        if (s.st === "CO") tasks.push(searchDWRStations(q).catch(() => []));
+        // Search USGS always; lakes use the LK site type. For CO rivers also
+        // search DWR in parallel (CO's authoritative source for flowing water).
+        const siteType = s.kind === "lake" ? "LK" : "ST";
+        const tasks = [searchUSGSSites(s.st, q, siteType).catch(() => [])];
+        if (s.st === "CO" && s.kind === "river") tasks.push(searchDWRStations(q).catch(() => []));
         const [usgsResults, dwrResults = []] = await Promise.all(tasks);
         // DWR first for CO — they're the authoritative source for CO rivers
         const combined = [
@@ -1219,22 +1327,38 @@ function addRiverModal(prefillName = "") {
     },
   });
 
+  // Water type — drives which gauge type we search (and whether we search at all).
+  const searchCard = el("div", { class: "card", style: "margin-bottom:14px;" }, [
+    el("div", { id: "gauge-search-title", style: "font-size:12px; color:var(--muted); margin-bottom:8px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;", text: "Find river gauge by name" }),
+    el("div", { style: "display:flex; gap:8px; align-items:center;" }, [stateSelect, searchQuery]),
+    el("div", { style: "margin-top:8px;" }, [searchBtn]),
+    resultsEl,
+  ]);
+  const codeGroup = el("div", { class: "form-group" }, [el("label", { text: "Gauge / site code" }), codeInput]);
+  const kindSel = el("select", {
+    onchange: (e) => {
+      s.kind = e.target.value;
+      const pond = s.kind === "pond";
+      searchCard.style.display = pond ? "none" : "";
+      codeGroup.style.display = pond ? "none" : "";
+      const title = $("#gauge-search-title");
+      if (title) title.textContent = s.kind === "lake" ? "Find lake / reservoir gauge by name" : "Find river gauge by name";
+    },
+  });
+  for (const [val, label] of [["river", "River / stream"], ["lake", "Lake / reservoir"], ["pond", "Pond (no gauge)"]]) {
+    const o = el("option", { value: val, text: label });
+    if (val === s.kind) o.selected = true;
+    kindSel.append(o);
+  }
+
   const form = el("form");
   form.append(
-    // Search section
-    el("div", { class: "card", style: "margin-bottom:14px;" }, [
-      el("div", { style: "font-size:12px; color:var(--muted); margin-bottom:8px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;", text: "Find gauge by name" }),
-      el("div", { style: "display:flex; gap:8px; align-items:center;" }, [
-        stateSelect,
-        searchQuery,
-      ]),
-      el("div", { style: "margin-top:8px;" }, [searchBtn]),
-      resultsEl,
-    ]),
+    el("div", { class: "form-group" }, [el("label", { text: "Water type" }), kindSel]),
+    searchCard,
     // Detail fields
-    el("div", { class: "form-group" }, [el("label", { text: "River name" }), nameInput]),
-    el("div", { class: "form-group" }, [el("label", { text: "Section (optional)" }), secInput]),
-    el("div", { class: "form-group" }, [el("label", { text: "Gauge / site code" }), codeInput]),
+    el("div", { class: "form-group" }, [el("label", { text: "Water name" }), nameInput]),
+    el("div", { class: "form-group" }, [el("label", { text: "Section / area (optional)" }), secInput]),
+    codeGroup,
     el("div", { class: "form-row" }, [
       el("div", { class: "form-group" }, [el("label", { text: "Latitude" }), latInput]),
       el("div", { class: "form-group" }, [el("label", { text: "Longitude" }), lonInput]),
@@ -1248,29 +1372,33 @@ function addRiverModal(prefillName = "") {
       class: "btn", text: "Save River",
       onclick: async (e) => {
         e.preventDefault();
-        if (!s.name.trim()) { toast("River name required"); return; }
-        if (!s.siteCode.trim()) { toast("Gauge code required — search for a gauge first"); return; }
+        if (!s.name.trim()) { toast("Water name required"); return; }
+        const isPond = s.kind === "pond";
+        if (!isPond && !s.siteCode.trim()) { toast("Gauge code required — search for a gauge first"); return; }
+        if (isPond && (!parseFloat(s.lat) || !parseFloat(s.lon))) { toast("Enter latitude & longitude so weather works"); return; }
         await dbPut(state.db, "rivers", {
           name: s.name.trim(),
           state: s.st.trim().toUpperCase() || "—",
           section: s.section.trim(),
-          siteCode: s.siteCode.trim(),
+          siteCode: isPond ? "" : s.siteCode.trim(),
           source: s.source || "usgs",
+          waterType: s.kind === "river" ? "river" : "still",
           lat: parseFloat(s.lat) || 0,
           lon: parseFloat(s.lon) || 0,
           favorite: false, custom: true,
-          lastCFS: null, lastWaterTempF: null, lastReadingAt: null,
+          lastCFS: null, prevCFS: null, lastElevationFt: null,
+          lastWaterTempF: null, lastReadingAt: null,
         });
         await reload();
         state.filters.riverSearch = "";
         renderRivers();
         closeModal();
-        toast("River added");
+        toast(s.kind === "river" ? "River added" : "Stillwater added");
       },
     }),
   ]);
 
-  openModal(modalShell("Add a river", form, footer));
+  openModal(modalShell("Add water", form, footer));
 }
 
 // ---------- trips tab ----------
@@ -1600,7 +1728,7 @@ async function newTripModal(prefRiver, editTrip = null) {
     notes: editTrip?.notes ?? "",
     // In edit mode, seed the snapshot from the saved trip so conditions are
     // preserved on save unless the user re-snapshots.
-    usgs: editTrip ? { flowCFS: editTrip.flowCFS, waterTempF: editTrip.waterTempF, gaugeHeightFt: editTrip.gaugeHeightFt } : null,
+    usgs: editTrip ? { flowCFS: editTrip.flowCFS, waterTempF: editTrip.waterTempF, gaugeHeightFt: editTrip.gaugeHeightFt, elevationFt: editTrip.elevationFt, storageAf: null } : null,
     weather: editTrip ? { airTempF: editTrip.airTempF, windMph: editTrip.windMph, windDir: editTrip.windDir, pressureHpa: editTrip.pressureHpa, precipIn: editTrip.precipIn, cloudPct: editTrip.cloudPct, humidity: editTrip.humidity } : null,
     coords: editTrip ? { lat: editTrip.lat, lon: editTrip.lon } : null,
     dataSource: editTrip?.dataSource ?? "usgs",
@@ -1635,7 +1763,7 @@ async function newTripModal(prefRiver, editTrip = null) {
 
   // Conditions snapshot
   const condCard = el("div", { class: "card" });
-  if (editTrip) condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource));
+  if (editTrip) condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, state.rivers.find(r => r.id === formState.riverId)?.waterType));
   const snapBtn = el("button", {
     class: "btn secondary",
     html: `${icon(ICONS.refresh, 18)} <span>${editTrip ? "Re-snapshot conditions" : "Snapshot current conditions"}</span>`,
@@ -1659,7 +1787,7 @@ async function newTripModal(prefRiver, editTrip = null) {
       try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
       formState.dataSource = river.source || "usgs";
       condCard.innerHTML = "";
-      condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource));
+      condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, river.waterType));
       snapBtn.disabled = false;
     }
   });
@@ -1778,6 +1906,8 @@ async function newTripModal(prefRiver, editTrip = null) {
           flowCFS: formState.usgs?.flowCFS ?? null,
           waterTempF: formState.usgs?.waterTempF ?? null,
           gaugeHeightFt: formState.usgs?.gaugeHeightFt ?? null,
+          elevationFt: formState.usgs?.elevationFt ?? null,
+          waterType: river.waterType || "river",
           airTempF: formState.weather?.airTempF ?? null,
           windMph: formState.weather?.windMph ?? null,
           windDir: formState.weather?.windDir ?? null,
@@ -1913,9 +2043,10 @@ async function openTrip(id) {
   const condCard = el("div", { class: "card" }, [
     el("h3", { text: "Conditions" }),
     buildConditionsGrid(
-      { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt },
+      { flowCFS: t.flowCFS, waterTempF: t.waterTempF, gaugeHeightFt: t.gaugeHeightFt, elevationFt: t.elevationFt, storageAf: null },
       { airTempF: t.airTempF, windMph: t.windMph, windDir: t.windDir, pressureHpa: t.pressureHpa, precipIn: t.precipIn, cloudPct: t.cloudPct, humidity: t.humidity },
       t.dataSource,
+      t.waterType,
     ),
   ]);
   body.append(condCard);
@@ -2626,6 +2757,8 @@ async function finishSession(picks) {
     flowCFS:      sess.usgs?.flowCFS      ?? null,
     waterTempF:   sess.usgs?.waterTempF   ?? null,
     gaugeHeightFt:sess.usgs?.gaugeHeightFt?? null,
+    elevationFt:  sess.usgs?.elevationFt  ?? null,
+    waterType:    river?.waterType || "river",
     airTempF:     sess.weather?.airTempF  ?? null,
     windMph:      sess.weather?.windMph   ?? null,
     windDir:      sess.weather?.windDir   ?? null,
@@ -2669,8 +2802,8 @@ const FIELD_MAP = {
   rivers: {
     name: "name", state: "state", section: "section", source: "source",
     site_code: "siteCode", lat: "lat", lon: "lon",
-    favorite: "favorite", custom: "custom",
-    last_cfs: "lastCFS", prev_cfs: "prevCFS",
+    favorite: "favorite", custom: "custom", water_type: "waterType",
+    last_cfs: "lastCFS", prev_cfs: "prevCFS", last_elevation_ft: "lastElevationFt",
     last_water_temp_f: "lastWaterTempF", last_reading_at: "lastReadingAt",
     notes: "notes",
   },
@@ -2683,6 +2816,7 @@ const FIELD_MAP = {
     humidity: "humidity", flies_used: "fliesUsed", leader_setup: "leaderSetup",
     fish_landed: "fishLanded", biggest: "biggest", notes: "notes",
     memo_count: "memoCount", data_source: "dataSource",
+    elevation_ft: "elevationFt", water_type: "waterType",
   },
   flies: {
     name: "name", type: "type", sizes: "sizes", color_variant: "colorVariant",

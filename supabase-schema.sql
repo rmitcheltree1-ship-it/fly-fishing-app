@@ -15,14 +15,20 @@ create table if not exists rivers (
   lon               double precision,
   favorite          boolean default false,
   custom            boolean default false,
+  water_type        text,
   last_cfs          double precision,
   prev_cfs          double precision,
+  last_elevation_ft double precision,
   last_water_temp_f double precision,
   last_reading_at   text,
   notes             text,
   updated_at        timestamptz default now(),
   deleted           boolean default false
 );
+
+-- If the rivers table already exists from an earlier run, add the new columns:
+alter table rivers add column if not exists water_type        text;
+alter table rivers add column if not exists last_elevation_ft double precision;
 
 -- ───────────────────────── TRIPS ──────────────────────────
 create table if not exists trips (
@@ -51,6 +57,8 @@ create table if not exists trips (
   notes           text,
   memo_count      integer,
   data_source     text,
+  elevation_ft    double precision,
+  water_type      text,
   gear_uids       text,
   fly_uids        text,
   updated_at      timestamptz default now(),
@@ -58,8 +66,10 @@ create table if not exists trips (
 );
 
 -- If the trips table already exists from an earlier run, add the new columns:
-alter table trips add column if not exists gear_uids text;
-alter table trips add column if not exists fly_uids  text;
+alter table trips add column if not exists gear_uids    text;
+alter table trips add column if not exists fly_uids     text;
+alter table trips add column if not exists elevation_ft double precision;
+alter table trips add column if not exists water_type   text;
 
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
