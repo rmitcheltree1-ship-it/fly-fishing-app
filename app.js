@@ -687,9 +687,13 @@ const state = {
   gear: [],
   filters: {
     riverSearch: "",
+    waterKind: "all",   // all | river | still
+    riverSort: "az",    // az | near
     flyType: null,
     flySearch: "",
   },
+  userLoc: null,        // { lat, lon } — cached after first "Near me"
+  conditionsFetched: new Set(), // uids we've already auto-refreshed this session
   recording: null, // { mediaRecorder, chunks, startedAt, timerId, elapsed }
   playingMemoId: null,
   playingAudio: null,
@@ -905,14 +909,13 @@ function buildHeroCard(r) {
   return card;
 }
 
-function buildRiverHero() {
+function buildRiverHero(favs) {
   const section = el("div", { id: "river-hero-section" });
-  const favs = state.rivers.filter(r => r.favorite);
 
   if (!favs.length) {
     section.append(el("div", { class: "swiper-hint" }, [
       el("div", { html: icon(ICONS.starOutline, 28), style: "opacity:0.4; color:var(--teal);" }),
-      el("div", { text: "Star a river to feature it here" }),
+      el("div", { text: "Star a water to feature it here" }),
     ]));
     return section;
   }
@@ -937,112 +940,211 @@ function buildRiverHero() {
   return section;
 }
 
-function renderRivers() {
-  setHeader("Waters", "Rivers & stillwater · tap for live conditions", [
-    el("button", {
-      class: "icon-btn",
-      "aria-label": "Add water",
-      html: icon(ICONS.plus, 18),
-      onclick: () => addRiverModal(),
-    }),
-  ]);
+// ---- Waters screen helpers ----
 
-  const panel = $("#panel-rivers");
-  const existingHero = $("#river-hero-section");
-
-  if (existingHero) {
-    panel.replaceChild(buildRiverHero(), existingHero);
-    const inp = $("#river-search-input");
-    if (inp && inp.value !== state.filters.riverSearch) inp.value = state.filters.riverSearch;
-  } else {
-    panel.innerHTML = "";
-    panel.append(
-      buildRiverHero(),
-      el("div", { class: "search" }, [
-        el("span", { html: icon(ICONS.search, 18) }),
-        el("input", {
-          id: "river-search-input",
-          type: "search",
-          placeholder: "Search rivers, sections, states",
-          value: state.filters.riverSearch,
-          oninput: (e) => { state.filters.riverSearch = e.target.value; renderRiverList(); },
-        }),
-      ]),
-      el("div", { id: "river-list" }),
-    );
-  }
-
-  renderRiverList();
-
-  // Background-refresh any starred, gauged water that has no cached reading yet.
-  const needData = state.rivers.filter(r => {
-    if (!r.favorite || !r.siteCode) return false;
-    return r.waterType === "still" ? r.lastElevationFt == null : r.lastCFS == null;
-  });
-  needData.forEach(r => {
-    const fetcher = r.source === "dwr" ? fetchDWR(r.siteCode) : fetchUSGS(r.siteCode);
-    fetcher.then(async usgs => {
-      if (!usgs) return;
-      if (r.waterType === "still") {
-        if (usgs.elevationFt == null && usgs.waterTempF == null) return;
-        r.lastElevationFt = usgs.elevationFt;
-      } else {
-        if (usgs.flowCFS == null) return;
-        r.prevCFS = null;
-        r.lastCFS = usgs.flowCFS;
-      }
-      r.lastWaterTempF = usgs.waterTempF;
-      r.lastReadingAt = usgs.observedAt;
-      await dbPut(state.db, "rivers", r);
-      await reload();
-      renderRivers();
-    }).catch(() => {});
-  });
+// Great-circle distance in miles between two lat/lon points.
+function milesBetween(lat1, lon1, lat2, lon2) {
+  const R = 3958.8, toRad = (x) => x * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
-function renderRiverList() {
+async function ensureUserLocation() {
+  if (state.userLoc) return state.userLoc;
+  try {
+    const pos = await new Promise((res, rej) =>
+      navigator.geolocation.getCurrentPosition(
+        p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
+        rej, { timeout: 8000, maximumAge: 600000 }
+      )
+    );
+    state.userLoc = pos;
+    return pos;
+  } catch (_) {
+    toast("Location unavailable — showing A–Z");
+    state.filters.riverSort = "az";
+    return null;
+  }
+}
+
+// Distinct waters fished most recently (newest first), linked back to a river.
+function recentWaters(limit = 8) {
+  const seen = new Set(), out = [];
+  for (const t of [...state.trips].sort((x, y) => (y.date || 0) - (x.date || 0))) {
+    const r = state.rivers.find(x => x.id === t.riverId || (t.riverUid && x.uid === t.riverUid));
+    if (!r || seen.has(r.id)) continue;
+    seen.add(r.id);
+    out.push(r);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function matchesKind(r) {
+  const k = state.filters.waterKind;
+  if (k === "still") return r.waterType === "still";
+  if (k === "river") return r.waterType !== "still";
+  return true;
+}
+
+// Data-freshness dot: green <3h old, gold <24h, grey older / none.
+function freshnessDot(r) {
+  const ms = r.lastReadingAt ? Date.parse(r.lastReadingAt) : 0;
+  const age = ms ? Date.now() - ms : Infinity;
+  const color = age < 3*3600e3 ? "#3aa76d" : age < 24*3600e3 ? "var(--gold)" : "var(--muted)";
+  return el("span", { style: `display:inline-block; width:8px; height:8px; border-radius:50%; background:${color}; flex-shrink:0;` });
+}
+
+function sectionLabel(text) {
+  return el("div", { style: "color:var(--muted); font-size:12px; margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;", text });
+}
+
+function renderRivers() {
+  setHeader("Waters", "Rivers & stillwater · tap for live conditions", [
+    el("button", { class: "icon-btn", "aria-label": "Add water", html: icon(ICONS.plus, 18), onclick: () => addRiverModal() }),
+  ]);
+  const panel = $("#panel-rivers");
+  panel.innerHTML = "";
+
+  // Water-type segmented filter
+  const seg = el("div", { class: "chips", style: "padding-bottom:0;" });
+  for (const [val, label] of [["all", "All"], ["river", "Rivers"], ["still", "Stillwater"]]) {
+    seg.append(el("button", {
+      class: "chip" + (state.filters.waterKind === val ? " active" : ""),
+      text: label,
+      onclick: () => { state.filters.waterKind = val; renderRivers(); },
+    }));
+  }
+  panel.append(seg);
+
+  // Search — only this rebuilds the browse list, so focus is kept while typing.
+  panel.append(el("div", { class: "search" }, [
+    el("span", { html: icon(ICONS.search, 18) }),
+    el("input", {
+      id: "river-search-input", type: "search",
+      placeholder: "Search waters, sections, states",
+      value: state.filters.riverSearch,
+      oninput: (e) => { state.filters.riverSearch = e.target.value; renderBrowseList(); },
+    }),
+  ]));
+
+  // Sections: Your waters (hero) + Recently fished
+  panel.append(el("div", { id: "waters-sections" }));
+  renderWatersSections();
+
+  // Browse all (sort toggle + grouped list)
+  panel.append(el("div", { id: "river-list" }));
+  renderBrowseList();
+
+  prefetchConditions();
+}
+
+function renderWatersSections() {
+  const host = $("#waters-sections");
+  if (!host) return;
+  host.innerHTML = "";
+
+  const favs = state.rivers.filter(r => r.favorite && matchesKind(r));
+  host.append(sectionLabel("Your waters"));
+  host.append(buildRiverHero(favs));
+
+  const recent = recentWaters().filter(matchesKind);
+  if (recent.length) {
+    host.append(sectionLabel("Recently fished"));
+    const row = el("div", { style: "display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch;" });
+    for (const r of recent) {
+      const isStill = r.waterType === "still";
+      const val = isStill ? r.lastElevationFt : r.lastCFS;
+      const meta = val != null ? `${Math.round(val)} ${isStill ? "ft" : "cfs"}` : (r.section || r.state || "");
+      row.append(el("button", {
+        style: "flex:0 0 auto; text-align:left; background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:10px 12px; min-width:140px; max-width:210px;",
+        onclick: () => openRiver(r.id),
+      }, [
+        el("div", { style: "font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: r.name }),
+        el("div", { style: "color:var(--muted); font-size:11px; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: meta }),
+      ]));
+    }
+    host.append(row);
+  }
+}
+
+function renderBrowseList() {
   const listEl = $("#river-list");
   if (!listEl) return;
   listEl.innerHTML = "";
 
+  // Browse header + sort toggle
+  const near = state.filters.riverSort === "near";
+  listEl.append(el("div", { style: "display:flex; align-items:center; justify-content:space-between; margin:16px 0 8px;" }, [
+    el("div", { style: "color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;", text: "Browse all" }),
+    el("div", { class: "chips", style: "padding:0; margin:0;" }, [
+      el("button", { class: "chip" + (!near ? " active" : ""), text: "A–Z",
+        onclick: () => { state.filters.riverSort = "az"; renderBrowseList(); } }),
+      el("button", { class: "chip" + (near ? " active" : ""), text: "Near me",
+        onclick: async () => { state.filters.riverSort = "near"; await ensureUserLocation(); renderBrowseList(); prefetchConditions(); } }),
+    ]),
+  ]));
+
   const q = state.filters.riverSearch.trim().toLowerCase();
-  const filtered = state.rivers.filter(r => {
+  let filtered = state.rivers.filter(r => {
+    if (!matchesKind(r)) return false;
     if (!q) return true;
     return (r.name + " " + (r.state || "") + " " + (r.section || "")).toLowerCase().includes(q);
-  }).sort((a, b) => {
-    if (a.favorite !== b.favorite) return b.favorite ? 1 : -1;
-    return a.name.localeCompare(b.name);
   });
 
-  if (filtered.length) {
-    filtered.forEach(r => listEl.append(riverRow(r)));
-  } else {
-    const rawQ = state.filters.riverSearch.trim();
-    listEl.append(el("div", { class: "empty", html: `${icon(ICONS.drop, 52)}<h3>No rivers match</h3><p>${rawQ ? `No results for "${rawQ}".` : "No rivers yet."} Add one below.</p>` }));
-    listEl.append(el("button", {
-      class: "btn",
-      style: "margin-top:8px;",
-      html: `${icon(ICONS.plus, 18)} <span>Add ${rawQ ? `"${rawQ}"` : "a new river"}</span>`,
-      onclick: () => addRiverModal(rawQ),
-    }));
+  if (!filtered.length) { listEl.append(emptyWaters(q)); return; }
+
+  if (near && state.userLoc) {
+    const { lat, lon } = state.userLoc;
+    filtered
+      .map(r => ({ r, d: (r.lat && r.lon) ? milesBetween(lat, lon, r.lat, r.lon) : Infinity }))
+      .sort((a, b) => a.d - b.d)
+      .forEach(({ r, d }) => listEl.append(riverRow(r, isFinite(d) ? d : null)));
+    return;
+  }
+
+  // A–Z, grouped under state headers
+  filtered.sort((a, b) => (a.state || "").localeCompare(b.state || "") || a.name.localeCompare(b.name));
+  let curState = null;
+  for (const r of filtered) {
+    if (r.state !== curState) {
+      curState = r.state;
+      listEl.append(el("div", { style: "color:var(--teal); font-size:12px; font-weight:700; margin:14px 2px 6px; letter-spacing:0.03em;", text: curState || "—" }));
+    }
+    listEl.append(riverRow(r));
   }
 }
 
-function riverRow(r) {
-  const isStill = r.waterType === "still";
-  const trend = isStill ? "steady" : flowTrend(r.lastCFS, r.prevCFS);
-  const subParts = [`${r.state}${r.section ? " · " + r.section : ""}`];
+function emptyWaters(q) {
+  const wrap = el("div");
+  wrap.append(el("div", { class: "empty", html: `${icon(ICONS.drop, 52)}<h3>No waters match</h3><p>${q ? `No results for "${q}".` : "Nothing here yet."}</p>` }));
+  wrap.append(el("button", { class: "btn", style: "margin-top:8px;", html: `${icon(ICONS.plus, 18)} <span>Add water</span>`,
+    onclick: () => addRiverModal(state.filters.riverSearch.trim()) }));
+  return wrap;
+}
 
-  const subEl = el("div", { class: "sub" }, [
-    document.createTextNode(subParts[0]),
-    ...(trend === "rising"  ? [el("span", { class: "trend-rising",  text: " ↑ rising"  })] : []),
-    ...(trend === "falling" ? [el("span", { class: "trend-falling", text: " ↓ falling" })] : []),
-  ]);
+function riverRow(r, distanceMi = null) {
+  const isStill = r.waterType === "still";
+  const trend = isStill ? null : flowTrend(r.lastCFS, r.prevCFS);
+  const hasReading = !!r.lastReadingAt || r.lastWaterTempF != null || (isStill ? r.lastElevationFt != null : r.lastCFS != null);
+
+  const subBits = [el("span", { text: `${r.state}${r.section ? " · " + r.section : ""}` })];
+  if (distanceMi != null) subBits.push(el("span", { style: "color:var(--teal);", text: ` · ${distanceMi < 10 ? distanceMi.toFixed(1) : Math.round(distanceMi)} mi` }));
+  if (trend === "rising")  subBits.push(el("span", { class: "trend-rising",  text: " ↑ rising" }));
+  if (trend === "falling") subBits.push(el("span", { class: "trend-falling", text: " ↓ falling" }));
+
+  // At-a-glance condition line: freshness dot + water temp.
+  const condEls = [];
+  if (hasReading) condEls.push(freshnessDot(r));
+  if (r.lastWaterTempF != null) condEls.push(el("span", { text: `${Math.round(r.lastWaterTempF)}°F water` }));
+  const condLine = condEls.length
+    ? el("div", { style: "display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; margin-top:3px;" }, condEls)
+    : null;
 
   const rightEl = el("div", { class: "river-right" }, [
     el("button", {
-      class: "star",
-      "aria-label": "Favorite",
+      class: "star", "aria-label": "Favorite",
       html: icon(r.favorite ? ICONS.star : ICONS.starOutline, 18),
       style: `color: ${r.favorite ? "var(--yellow)" : "var(--muted)"}`,
       onclick: async (e) => {
@@ -1059,17 +1161,50 @@ function riverRow(r) {
     ]) : null,
   ]);
 
-  return el("button", {
-    class: "river-row",
-    onclick: () => openRiver(r.id),
-  }, [
+  return el("button", { class: "river-row", onclick: () => openRiver(r.id) }, [
     el("div", { class: "drop", html: icon(ICONS.drop, 18) }),
     el("div", { class: "meta" }, [
       el("div", { class: "name", text: r.name }),
-      subEl,
+      el("div", { class: "sub" }, subBits),
+      condLine,
     ]),
     rightEl,
   ]);
+}
+
+// Auto-refresh conditions for the most relevant waters (favorites + recently
+// fished + nearest few when sorting by distance) so at-a-glance lines populate.
+function prefetchConditions() {
+  const targets = new Map();
+  const add = (r) => { if (r && r.siteCode && !state.conditionsFetched.has(r.uid)) targets.set(r.uid, r); };
+  state.rivers.filter(r => r.favorite).forEach(add);
+  recentWaters().forEach(add);
+  if (state.filters.riverSort === "near" && state.userLoc) {
+    const { lat, lon } = state.userLoc;
+    state.rivers.filter(r => r.siteCode && r.lat && r.lon)
+      .map(r => ({ r, d: milesBetween(lat, lon, r.lat, r.lon) }))
+      .sort((a, b) => a.d - b.d).slice(0, 6).forEach(x => add(x.r));
+  }
+  for (const r of targets.values()) {
+    state.conditionsFetched.add(r.uid);
+    const fetcher = r.source === "dwr" ? fetchDWR(r.siteCode) : fetchUSGS(r.siteCode);
+    fetcher.then(async usgs => {
+      if (!usgs) return;
+      if (r.waterType === "still") {
+        if (usgs.elevationFt == null && usgs.waterTempF == null) return;
+        r.lastElevationFt = usgs.elevationFt;
+      } else {
+        if (usgs.flowCFS == null) return;
+        r.prevCFS = r.lastCFS ?? null;
+        r.lastCFS = usgs.flowCFS;
+      }
+      r.lastWaterTempF = usgs.waterTempF;
+      r.lastReadingAt = usgs.observedAt;
+      await dbPut(state.db, "rivers", r);
+      await reload();
+      if (state.tab === "rivers") { renderWatersSections(); renderBrowseList(); }
+    }).catch(() => {});
+  }
 }
 
 // ---------- river detail (modal) ----------
