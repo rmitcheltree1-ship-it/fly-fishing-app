@@ -115,6 +115,19 @@ const SEED_FLIES = [
   { name: "Foam Ant",            type: "Terrestrial",sizes: "14–18", imitates: "Black or cinnamon ant", conditions: "Warm afternoons, banks, summer", notes: "Don't underestimate — picky fish eat ants." },
 ];
 
+// Warmwater / bass & panfish confidence flies (migration v7) — for the Catawba,
+// Carolinas rivers, and the lakes/ponds in the stillwater library.
+const WARMWATER_FLIES = [
+  { name: "Clouser Minnow",        type: "Streamer",    sizes: "2–8",   colorVariant: "Chartreuse/White", imitates: "Shad, shiners, baitfish", conditions: "Rivers & lakes — smallmouth, largemouth, stripers", notes: "The #1 warmwater fly. Jigging strip-pause; let the eyes do the work." },
+  { name: "Bass Popper",           type: "Dry",         sizes: "2–8",   colorVariant: "Chartreuse / yellow", imitates: "Surface bug, frog, struggling baitfish", conditions: "Dawn & dusk, calm water, summer", notes: "Pop, pause, let the rings fade, then pop again. Bass & big bream." },
+  { name: "Murdich Minnow",        type: "Streamer",    sizes: "1/0–4", colorVariant: "Olive/white", imitates: "Shad / open-water baitfish", conditions: "Lakes & reservoirs, schooling fish, points", notes: "Flashy and durable — great for searching big still water." },
+  { name: "Near Nuff Crayfish",    type: "Streamer",    sizes: "4–8",   colorVariant: "Rusty brown", imitates: "Crayfish", conditions: "Rocky rivers like the Catawba — smallmouth", notes: "Dead-drift or hop along the bottom. Smallmouth can't resist it." },
+  { name: "Dahlberg Diver",        type: "Streamer",    sizes: "2–6",   colorVariant: "Black / frog", imitates: "Diving frog / baitfish", conditions: "Weed edges and banks at dusk", notes: "Dives and wakes on the strip — explosive topwater eats." },
+  { name: "Bully's Bluegill Spider", type: "Terrestrial", sizes: "8–12", colorVariant: "Black / chartreuse", imitates: "Spider / panfish snack", conditions: "Ponds & lake shallows — bluegill & bream", notes: "Tiny rubber-leg killer for panfish. Twitch and pause." },
+  { name: "Game Changer",          type: "Streamer",    sizes: "1/0–4", colorVariant: "White / olive", imitates: "Large baitfish", conditions: "Trophy bass & musky, big water", notes: "Articulated, swims lifelike. Slow strips near cover." },
+  { name: "Gurgler",               type: "Dry",         sizes: "2–8",   colorVariant: "Chartreuse / white", imitates: "Topwater bug / fleeing baitfish", conditions: "Calm mornings, surface-feeding bass & stripers", notes: "Foam-lipped waker — steady gurgle across the top." },
+];
+
 const SEED_LEADERS = [
   { name: "Dry Fly — Technical", situation: "Spring creeks, tailwaters, picky risers on flat water",
     rod: "3–5 wt", length: "12 ft", taper: "5X tapered", tippet: "18–24 in of 5X or 6X",
@@ -482,6 +495,22 @@ async function seedIfNeeded(db) {
       }
     }
     await dbPut(db, "meta", { id: 6, value: true });
+  }
+
+  // Migration v7 — add warmwater / bass & panfish confidence flies.
+  const v7 = await dbGet(db, "meta", 7);
+  if (!v7) {
+    const existingUids = new Set((await dbGetAll(db, "flies")).map(f => f.uid));
+    for (const f of WARMWATER_FLIES) {
+      const uid = seedFlyUid(f);
+      if (!existingUids.has(uid)) {
+        await dbPut(db, "flies", {
+          ...f, favorite: false, retired: false, imageDataUrl: null,
+          uid, updatedAt: SEED_TS, deleted: false, _fromSync: true,
+        });
+      }
+    }
+    await dbPut(db, "meta", { id: 7, value: true });
   }
 }
 
