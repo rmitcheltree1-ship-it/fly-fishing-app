@@ -792,6 +792,25 @@ async function fetchWeatherArchive(lat, lon, dateStr, hour = 12) {
   return null;
 }
 
+// Colorado DWR daily values for a past date (YYYY-MM-DD). DWR wants MM/DD/YYYY.
+async function fetchDWRDaily(abbrev, dateStr) {
+  const [y, m, d] = dateStr.split("-");
+  const enc = encodeURIComponent(`${m}/${d}/${y}`);
+  const out = { flowCFS: null, waterTempF: null, gaugeHeightFt: null, elevationFt: null, storageAf: null, observedAt: `${dateStr}T12:00` };
+  const getVal = async (param) => {
+    const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrytimeseriesday/?format=json&abbrev=${encodeURIComponent(abbrev)}&parameter=${param}&startDate=${enc}&endDate=${enc}`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const list = (await r.json()).ResultList ?? [];
+    const row = list.find(x => (x.measDate || "").startsWith(dateStr)) || list[0];
+    const v = row && row.measValue != null && row.measValue !== "" ? parseFloat(row.measValue) : null;
+    return isFinite(v) ? v : null;
+  };
+  try { out.flowCFS = await getVal("DISCHRG"); } catch (_) {}
+  try { out.gaugeHeightFt = await getVal("GAGE_HT"); } catch (_) {}
+  return out;
+}
+
 function compass(deg) {
   if (deg == null || !isFinite(deg)) return "";
   const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
@@ -2169,48 +2188,54 @@ async function newTripModal(prefRiver, editTrip = null) {
     html: `${icon(ICONS.refresh, 18)} <span>${computeSnapLabel()}</span>`,
     onclick: async (e) => {
       e.preventDefault();
+      const river = state.rivers.find(r => r.id === formState.riverId);
+      // Render whatever we currently have, so the card never goes blank.
+      const showCurrent = () => {
+        condCard.innerHTML = "";
+        condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, river?.waterType));
+      };
+      if (!river) { toast("Pick a river first"); return; }
+
       snapBtn.disabled = true;
       condCard.innerHTML = "";
       condCard.append(conditionsGridSkeleton());
-      const river = state.rivers.find(r => r.id === formState.riverId);
-      if (!river) { snapBtn.disabled = false; return; }
 
       const dateStr = (formState.date || "").slice(0, 10);
       const hour = parseInt((formState.date || "").slice(11, 13), 10) || 12;
       const todayStr = toLocalInput(Date.now()).slice(0, 10);
       const isPast = dateStr && dateStr < todayStr;
+      const isDWR = river.source === "dwr";
 
+      let usgs = null, wx = null;
       if (isPast) {
-        // Historical: use the river's own location (you're not there now) and
-        // pull that day's daily reading + archived weather.
-        formState.coords = { lat: river.lat, lon: river.lon };
-        if (river.siteCode && river.source !== "dwr") {
-          try { formState.usgs = await fetchUSGSDaily(river.siteCode, dateStr); } catch (_) {}
-        } else if (river.source === "dwr") {
-          toast("Historical gauge data isn't available for CO DWR sites");
-          formState.usgs = null;
+        formState.coords = { lat: river.lat, lon: river.lon };   // you're not there now
+        if (river.siteCode) {
+          try { usgs = isDWR ? await fetchDWRDaily(river.siteCode, dateStr) : await fetchUSGSDaily(river.siteCode, dateStr); } catch (_) {}
         }
-        try { formState.weather = await fetchWeatherArchive(river.lat, river.lon, dateStr, hour); } catch (_) {}
-        if (formState.usgs && formState.usgs.flowCFS == null && formState.usgs.elevationFt == null) {
-          toast("No USGS reading published for that date");
-        }
+        try { wx = await fetchWeatherArchive(river.lat, river.lon, dateStr, hour); } catch (_) {}
       } else {
-        // Live: prefer current GPS, fall back to the river's coords.
         try {
-          formState.coords = await new Promise((res, rej) => {
+          formState.coords = await new Promise((res, rej) =>
             navigator.geolocation.getCurrentPosition(
               p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
-              rej, { timeout: 8000, maximumAge: 600000 }
-            );
-          });
+              rej, { timeout: 8000, maximumAge: 600000 }));
         } catch (_) { formState.coords = { lat: river.lat, lon: river.lon }; }
-        try { formState.usgs = river.source === "dwr" ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
-        try { formState.weather = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
+        if (river.siteCode) {
+          try { usgs = isDWR ? await fetchDWR(river.siteCode) : await fetchUSGS(river.siteCode); } catch (_) {}
+        }
+        try { wx = await fetchWeather(formState.coords.lat, formState.coords.lon); } catch (_) {}
       }
 
-      formState.dataSource = river.source || "usgs";
-      condCard.innerHTML = "";
-      condCard.append(buildConditionsGrid(formState.usgs, formState.weather, formState.dataSource, river.waterType));
+      // Only adopt new readings if they actually contain data — never overwrite
+      // existing conditions with blanks.
+      const gotGauge = usgs && (usgs.flowCFS != null || usgs.elevationFt != null || usgs.gaugeHeightFt != null || usgs.waterTempF != null);
+      if (gotGauge) { formState.usgs = usgs; formState.dataSource = river.source || "usgs"; }
+      if (wx && (wx.airTempF != null || wx.windMph != null || wx.pressureHpa != null)) formState.weather = wx;
+
+      if (!river.siteCode) toast("This water has no gauge — weather only");
+      else if (!gotGauge) toast(isPast ? `No gauge reading published for ${dateStr} — kept previous values` : "Couldn't reach the gauge — kept previous values");
+
+      showCurrent();
       snapBtn.disabled = false;
     }
   });
