@@ -2831,16 +2831,17 @@ async function fullSync() {
   syncing = true;
   setSyncStatus("syncing");
   let ok = true;
-  try {
-    await syncStore("rivers");
-    await syncStore("flies");
-    await syncStore("leaders");
-    await syncStore("trips");
-    await relinkTripRivers();
-  } catch (err) {
-    ok = false;
-    console.error("sync failed", err);
+  // Sync each store independently so one failing table (e.g. a column that
+  // hasn't been migrated yet in Supabase) doesn't block the others.
+  for (const store of ["rivers", "flies", "leaders", "gear", "trips"]) {
+    try {
+      await syncStore(store);
+    } catch (err) {
+      ok = false;
+      console.error("sync failed for", store, err);
+    }
   }
+  try { await relinkTripRivers(); } catch (e) { console.error("relink failed", e); }
   // Always refresh the UI from local data — even on a sync error the screen
   // must never be left blank.
   try { await reload(); rerenderCurrent(); } catch (e) { console.error("rerender failed", e); }
