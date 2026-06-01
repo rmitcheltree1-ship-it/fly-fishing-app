@@ -1000,6 +1000,7 @@ function switchTab(name) {
   else if (name === "flies") renderFlies();
   else if (name === "leaders") renderLeaders();
   else if (name === "map") renderMap();
+  else if (name === "reports") renderReports();
 }
 
 $("#tabs").addEventListener("click", (e) => {
@@ -2968,6 +2969,198 @@ function openFlyEdit(existing = null) {
 
 // ---------- leaders tab ----------
 
+// ========================================================================
+//  Reports
+// ========================================================================
+
+// state.trips is already RLS-scoped to the current user; this guard covers
+// any edge case where a cross-user record leaked into local storage.
+function myTrips() {
+  return state.trips.filter(t => !t.deleted);
+}
+
+function seasonStats() {
+  const trips = myTrips();
+  if (!trips.length) return null;
+  const totalFish = trips.reduce((s, t) => s + (t.fishLanded || 0), 0);
+  const avgFish = trips.length ? Math.round((totalFish / trips.length) * 10) / 10 : 0;
+  const bestTrip = trips.reduce((b, t) => (t.fishLanded || 0) > (b ? b.fishLanded || 0 : -1) ? t : b, null);
+  const biggestTrip = trips.reduce((b, t) => (t.biggest || 0) > (b ? b.biggest || 0 : -1) ? t : b, null);
+  const uniqueWaters = new Set(trips.map(t => t.riverUid || t.riverName)).size;
+  return { trips, totalFish, avgFish, bestTrip, biggestTrip, uniqueWaters };
+}
+
+function byWaterStats() {
+  const trips = myTrips();
+  const groups = new Map();
+  for (const t of trips) {
+    const key = t.riverUid || t.riverName;
+    if (!groups.has(key)) groups.set(key, { name: t.riverName, trips: [] });
+    groups.get(key).trips.push(t);
+  }
+  return [...groups.values()].map(g => {
+    const n = g.trips.length;
+    const totalFish = g.trips.reduce((s, t) => s + (t.fishLanded || 0), 0);
+    const avgFish = Math.round((totalFish / n) * 10) / 10;
+    const cfsVals = g.trips.map(t => t.flowCFS).filter(v => v != null && isFinite(v));
+    const best = g.trips.reduce((b, t) => (t.fishLanded || 0) > (b ? b.fishLanded || 0 : -1) ? t : b, null);
+    return {
+      name: g.name, n, totalFish, avgFish,
+      cfsMin: cfsVals.length ? Math.round(Math.min(...cfsVals)) : null,
+      cfsMax: cfsVals.length ? Math.round(Math.max(...cfsVals)) : null,
+      best,
+    };
+  }).sort((a, b) => b.totalFish - a.totalFish);
+}
+
+function statCard(label, value, sub) {
+  return el("div", { class: "metric", style: "background:var(--bg-2); border-radius:12px; padding:14px 12px; min-height:80px; display:flex; flex-direction:column; justify-content:space-between;" }, [
+    el("div", { style: "font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; font-weight:600;", text: label }),
+    el("div", { style: "font-size:28px; font-weight:900; color:var(--teal); line-height:1.1; margin:6px 0 2px;", text: String(value ?? "—") }),
+    sub ? el("div", { style: "font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: sub }) : null,
+  ]);
+}
+
+function renderReports() {
+  setHeader("Reports", "Your season at a glance", []);
+  const panel = $("#panel-reports");
+  panel.innerHTML = "";
+
+  const trips = myTrips();
+  if (!trips.length) {
+    panel.append(el("div", { class: "empty", html: `${icon(ICONS.book, 52)}<h3>No trips yet</h3><p>Log your first trip to see your season report.</p>` }));
+    return;
+  }
+
+  // ── Section 1: Season at a glance ──────────────────────────────────────
+  const s = seasonStats();
+  const fmtDate = (ms) => ms ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "—";
+  panel.append(el("div", { class: "card" }, [
+    el("h3", { text: "Season at a glance" }),
+    el("div", { style: "display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;" }, [
+      statCard("Trips", s.trips.length),
+      statCard("Fish landed", s.totalFish),
+      statCard("Avg fish / trip", s.avgFish.toFixed(1)),
+      statCard("Waters fished", s.uniqueWaters),
+      statCard("Best day", s.bestTrip?.fishLanded ?? "—",
+        s.bestTrip ? `${s.bestTrip.riverName?.split("—")[0].trim()} · ${fmtDate(s.bestTrip.date)}` : null),
+      statCard("Biggest fish", s.biggestTrip?.biggest ? `${s.biggestTrip.biggest}"` : "—",
+        s.biggestTrip?.biggest ? `${s.biggestTrip.riverName?.split("—")[0].trim()} · ${fmtDate(s.biggestTrip.date)}` : null),
+    ]),
+  ]));
+
+  // ── Section 2: By water ─────────────────────────────────────────────────
+  const waters = byWaterStats();
+  const byWaterCard = el("div", { class: "card" });
+  byWaterCard.append(el("h3", { text: "By water" }));
+  waters.forEach((w, i) => {
+    const sub = el("div", { style: `padding:10px 0;${i ? " border-top:1px solid var(--line);" : ""}` });
+    sub.append(
+      el("div", { style: "display:flex; justify-content:space-between; align-items:baseline;" }, [
+        el("span", { style: "font-weight:700; font-size:14px;", text: w.name }),
+        el("span", { style: "color:var(--teal); font-weight:700; font-size:14px;", text: `${w.totalFish} fish` }),
+      ]),
+      el("div", { style: "display:flex; gap:12px; margin-top:5px; flex-wrap:wrap;" }, [
+        el("span", { style: "color:var(--muted); font-size:12px;", text: `${w.n} trip${w.n === 1 ? "" : "s"}` }),
+        el("span", { style: "color:var(--muted); font-size:12px;", text: `avg ${w.avgFish.toFixed(1)} fish` }),
+        w.cfsMin != null ? el("span", { style: "color:var(--muted); font-size:12px;", text: `${w.cfsMin}–${w.cfsMax} cfs` }) : null,
+        w.best?.fishLanded ? el("span", { style: "color:var(--muted); font-size:12px;", text: `best ${w.best.fishLanded} fish` }) : null,
+      ]),
+      w.best?.fliesUsed ? el("div", { style: "color:var(--muted); font-size:12px; margin-top:3px; font-style:italic;", text: `Best day flies: ${w.best.fliesUsed}` }) : null,
+    );
+    byWaterCard.append(sub);
+  });
+  panel.append(byWaterCard);
+
+  // ── Section 3: Claude AI season summary ────────────────────────────────
+  const aiCard = el("div", { class: "card" });
+  const aiTitle = el("h3", { text: "AI Season Summary" });
+  const apiKeyStored = localStorage.getItem("flyfish_anthropic_key") || "";
+  let summaryEl = el("div");
+  const regenerateBtn = el("button", { class: "btn secondary", style: "margin-top:10px; display:none;", text: "Regenerate" });
+
+  const buildSummaryPayload = () => {
+    const waters2 = byWaterStats().map(w => ({
+      water: w.name, trips: w.n, totalFish: w.totalFish,
+      avgFish: w.avgFish, cfsRange: w.cfsMin != null ? `${w.cfsMin}–${w.cfsMax} cfs` : "unknown",
+      bestDayFish: w.best?.fishLanded ?? 0, bestDayFlies: w.best?.fliesUsed || "not recorded",
+    }));
+    return {
+      season: {
+        trips: s.trips.length, totalFish: s.totalFish,
+        avgFish: s.avgFish, uniqueWaters: s.uniqueWaters,
+        bestDay: s.bestTrip ? { fish: s.bestTrip.fishLanded, water: s.bestTrip.riverName, date: fmtDate(s.bestTrip.date) } : null,
+        biggestFish: s.biggestTrip?.biggest ? `${s.biggestTrip.biggest} inches` : null,
+      },
+      byWater: waters2,
+    };
+  };
+
+  const runGenerate = async (keyToUse) => {
+    summaryEl.innerHTML = "";
+    summaryEl.append(el("div", { style: "color:var(--muted); font-size:13px; margin-top:8px;", text: "Analyzing your season…" }));
+    regenerateBtn.style.display = "none";
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": keyToUse,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 350,
+          system: "You are a fly fishing coach analyzing an angler's personal trip log. Be specific, reference actual numbers, and give 1-2 actionable observations. Keep it to 4-5 sentences.",
+          messages: [{ role: "user", content: `Here is my season data: ${JSON.stringify(buildSummaryPayload())}` }],
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const text = data?.content?.[0]?.text || "No response received.";
+      summaryEl.innerHTML = "";
+      summaryEl.append(el("div", { style: "font-size:13px; line-height:1.6; color:var(--fg); margin-top:8px; white-space:pre-wrap;", text: text }));
+      regenerateBtn.style.display = "";
+    } catch (err) {
+      summaryEl.innerHTML = "";
+      summaryEl.append(el("div", { style: "color:var(--red); font-size:13px; margin-top:8px;", text: `Error: ${err.message}` }));
+      regenerateBtn.style.display = "";
+    }
+  };
+
+  let keyInput = null, generateBtn = null;
+  if (!apiKeyStored) {
+    const keyGroup = el("div", { class: "form-group", style: "margin-top:10px;" }, [
+      el("label", { text: "Anthropic API key" }),
+      el("div", { style: "display:flex; gap:8px;" }, [
+        (keyInput = el("input", { type: "password", placeholder: "sk-ant-…", style: "flex:1; min-width:0;" })),
+        (generateBtn = el("button", { class: "btn", style: "flex-shrink:0;", text: "Generate",
+          onclick: async (e) => {
+            e.preventDefault();
+            const k = keyInput.value.trim();
+            if (!k.startsWith("sk-")) { toast("Enter a valid Anthropic API key (sk-ant-…)"); return; }
+            localStorage.setItem("flyfish_anthropic_key", k);
+            keyGroup.remove();
+            await runGenerate(k);
+          },
+        })),
+      ]),
+    ]);
+    aiCard.append(aiTitle, el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Add your Anthropic API key once to enable AI summaries. Stored locally, never synced." }), keyGroup);
+  } else {
+    generateBtn = el("button", { class: "btn", style: "margin-top:10px;", text: "Generate Summary",
+      onclick: (e) => { e.preventDefault(); runGenerate(apiKeyStored); generateBtn.style.display = "none"; },
+    });
+    regenerateBtn.onclick = (e) => { e.preventDefault(); runGenerate(apiKeyStored); regenerateBtn.style.display = "none"; };
+    aiCard.append(aiTitle, generateBtn, summaryEl, regenerateBtn);
+  }
+  panel.append(aiCard);
+}
+
 function renderLeaders() {
   setHeader("Leaders", "Quick-start rigs", []);
   const panel = $("#panel-leaders");
@@ -3556,6 +3749,7 @@ function rerenderCurrent() {
   else if (state.tab === "flies") renderFlies();
   else if (state.tab === "leaders") renderLeaders();
   else if (state.tab === "map") renderMap();
+  else if (state.tab === "reports") renderReports();
 }
 
 // ---- account button + status ----
