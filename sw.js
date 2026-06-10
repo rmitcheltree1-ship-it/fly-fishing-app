@@ -1,5 +1,5 @@
 // Simple offline cache: app shell + most-recently-fetched API responses.
-const CACHE = "flyfish-v2";
+const CACHE = "flyfish-v3";
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (e) => {

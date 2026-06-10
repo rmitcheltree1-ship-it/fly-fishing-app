@@ -1597,8 +1597,14 @@ async function renderFlowLevel(r, card) {
   bodyEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "Loading…" }));
 
   let flow = r.lastCFS, stats = null;
-  try { const u = await fetchUSGS(r.siteCode); if (u?.flowCFS != null) flow = u.flowCFS; } catch (_) {}
-  try { stats = await fetchUSGSStats(r.siteCode); } catch (_) {}
+  try {
+    const u = r.source === "dwr" ? await fetchDWR(r.siteCode) : await fetchUSGS(r.siteCode);
+    if (u?.flowCFS != null) flow = u.flowCFS;
+  } catch (_) {}
+  // Historical percentile stats exist for USGS gauges only.
+  if (r.source !== "dwr") {
+    try { stats = await fetchUSGSStats(r.siteCode); } catch (_) {}
+  }
 
   bodyEl.innerHTML = "";
   const hasIdeal = r.idealFlowMin != null && r.idealFlowMax != null;
@@ -1804,7 +1810,7 @@ function addRiverModal(prefillName = "") {
         // search DWR in parallel (CO's authoritative source for flowing water).
         const siteType = s.kind === "lake" ? "LK" : "ST";
         const tasks = [searchUSGSSites(s.st, q, siteType).catch(() => [])];
-        if (s.st === "CO" && s.kind === "river") tasks.push(searchDWRStations(q).catch(() => []));
+        if (s.st === "CO" && (s.kind === "river" || s.kind === "stream")) tasks.push(searchDWRStations(q).catch(() => []));
         const [usgsResults, dwrResults = []] = await Promise.all(tasks);
         // DWR first for CO — they're the authoritative source for CO rivers
         const combined = [
@@ -1847,19 +1853,30 @@ function addRiverModal(prefillName = "") {
     el("div", { style: "display:flex; gap:8px; align-items:center;" }, [stateSelect, searchQuery]),
     el("div", { style: "margin-top:8px;" }, [searchBtn]),
     resultsEl,
+    el("div", { style: "color:var(--muted); font-size:11px; margin-top:8px;", text: "No gauge on your water? Leave the code blank and enter coordinates below — you'll still get weather and trip logging." }),
   ]);
   const codeGroup = el("div", { class: "form-group" }, [el("label", { text: "Gauge / site code" }), codeInput]);
+  // Kinds: rivers + streams are flowing (ST gauges, CFS); lakes use LK gauges;
+  // ponds and coastal water have no USGS gauge — weather only.
+  const KINDS = [
+    ["river",   "River",            "flowing"],
+    ["stream",  "Stream / creek",   "flowing"],
+    ["lake",    "Lake / reservoir", "still"],
+    ["pond",    "Pond / small water", "still"],
+    ["coastal", "Coastal / ocean",  "still"],
+  ];
+  const kindHasGaugeSearch = (k) => k === "river" || k === "stream" || k === "lake";
   const kindSel = el("select", {
     onchange: (e) => {
       s.kind = e.target.value;
-      const pond = s.kind === "pond";
-      searchCard.style.display = pond ? "none" : "";
-      codeGroup.style.display = pond ? "none" : "";
+      const gauged = kindHasGaugeSearch(s.kind);
+      searchCard.style.display = gauged ? "" : "none";
+      codeGroup.style.display = gauged ? "" : "none";
       const title = $("#gauge-search-title");
-      if (title) title.textContent = s.kind === "lake" ? "Find lake / reservoir gauge by name" : "Find river gauge by name";
+      if (title) title.textContent = s.kind === "lake" ? "Find lake / reservoir gauge by name" : "Find river / stream gauge by name";
     },
   });
-  for (const [val, label] of [["river", "River / stream"], ["lake", "Lake / reservoir"], ["pond", "Pond (no gauge)"]]) {
+  for (const [val, label] of KINDS) {
     const o = el("option", { value: val, text: label });
     if (val === s.kind) o.selected = true;
     kindSel.append(o);
@@ -1883,20 +1900,25 @@ function addRiverModal(prefillName = "") {
     el("button", { class: "btn secondary", text: "Cancel",
       onclick: (e) => { e.preventDefault(); closeModal(); } }),
     el("button", {
-      class: "btn", text: "Save River",
+      class: "btn", text: "Save Water",
       onclick: async (e) => {
         e.preventDefault();
         if (!s.name.trim()) { toast("Water name required"); return; }
-        const isPond = s.kind === "pond";
-        if (!isPond && !s.siteCode.trim()) { toast("Gauge code required — search for a gauge first"); return; }
-        if (isPond && (!parseFloat(s.lat) || !parseFloat(s.lon))) { toast("Enter latitude & longitude so weather works"); return; }
+        // A gauge is optional for every kind — plenty of small streams and
+        // ponds have none. Without one we need coordinates so weather works.
+        const code = kindHasGaugeSearch(s.kind) ? s.siteCode.trim() : "";
+        if (!code && (!parseFloat(s.lat) || !parseFloat(s.lon))) {
+          toast("No gauge selected — enter latitude & longitude so weather works");
+          return;
+        }
+        const isFlowing = s.kind === "river" || s.kind === "stream";
         await dbPut(state.db, "rivers", {
           name: s.name.trim(),
           state: s.st.trim().toUpperCase() || "—",
           section: s.section.trim(),
-          siteCode: isPond ? "" : s.siteCode.trim(),
+          siteCode: code,
           source: s.source || "usgs",
-          waterType: s.kind === "river" ? "river" : "still",
+          waterType: isFlowing ? "river" : "still",
           lat: parseFloat(s.lat) || 0,
           lon: parseFloat(s.lon) || 0,
           favorite: false, custom: true,
@@ -1907,7 +1929,7 @@ function addRiverModal(prefillName = "") {
         state.filters.riverSearch = "";
         renderRivers();
         closeModal();
-        toast(s.kind === "river" ? "River added" : "Stillwater added");
+        toast(isFlowing ? "Water added" : "Stillwater added");
       },
     }),
   ]);
@@ -3150,7 +3172,12 @@ function renderReports() {
         })),
       ]),
     ]);
-    aiCard.append(aiTitle, el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Add your Anthropic API key once to enable AI summaries. Stored locally, never synced." }), keyGroup);
+    regenerateBtn.onclick = (e) => {
+      e.preventDefault();
+      const k = localStorage.getItem("flyfish_anthropic_key");
+      if (k) { runGenerate(k); regenerateBtn.style.display = "none"; }
+    };
+    aiCard.append(aiTitle, el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Add your Anthropic API key once to enable AI summaries. Stored locally, never synced." }), keyGroup, summaryEl, regenerateBtn);
   } else {
     generateBtn = el("button", { class: "btn", style: "margin-top:10px;", text: "Generate Summary",
       onclick: (e) => { e.preventDefault(); runGenerate(apiKeyStored); generateBtn.style.display = "none"; },
