@@ -17,6 +17,7 @@
   <style>
     :root {
       --bg: #f2ede3;
+      --bg-rgb: 242, 237, 227; /* for translucent appbar/tab backdrops */
       --bg-2: #e6dfd0;
       --bg-3: #d9d0be;
       --line: #c2b8a6;
@@ -27,6 +28,8 @@
       --gold: #b8701a;
       --red: #b83030;
       --yellow: #c07830;
+      --card: #ffffff;
+      --skeleton-hi: #ccc4b4;
       --shadow: 0 4px 16px rgba(0,0,0,0.12);
       --radius: 13px;
     }
@@ -54,7 +57,7 @@
 
     header.appbar {
       position: sticky; top: 0; z-index: 10;
-      background: rgba(242, 237, 227, 0.92);
+      background: rgba(var(--bg-rgb), 0.92);
       backdrop-filter: saturate(140%) blur(8px);
       border-bottom: 1px solid var(--line);
       padding: env(safe-area-inset-top) 14px 10px;
@@ -70,7 +73,7 @@
       width: 34px; height: 34px; flex: none;
       border-radius: 50%;
       border: 1.5px solid var(--line);
-      background: #fff;
+      background: var(--card);
       color: var(--muted);
       display: flex; align-items: center; justify-content: center;
       font-size: 13px; font-weight: 700;
@@ -94,7 +97,7 @@
 
     nav.tabs {
       position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
-      background: rgba(242, 237, 227, 0.96);
+      background: rgba(var(--bg-rgb), 0.96);
       backdrop-filter: saturate(140%) blur(10px);
       border-top: 1px solid var(--line);
       display: flex;
@@ -361,7 +364,7 @@
     }
 
     .skeleton {
-      background: linear-gradient(90deg, var(--bg-3) 25%, #ccc4b4 50%, var(--bg-3) 75%);
+      background: linear-gradient(90deg, var(--bg-3) 25%, var(--skeleton-hi) 50%, var(--bg-3) 75%);
       background-size: 200% 100%;
       animation: shimmer 1.4s infinite;
       border-radius: 6px;

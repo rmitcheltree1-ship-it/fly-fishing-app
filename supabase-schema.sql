@@ -117,6 +117,17 @@ create table if not exists leaders (
   deleted    boolean default false
 );
 
+-- ─────────────────────── USER PREFS ───────────────────────
+-- Per-user app preferences (theme, etc.) synced across devices.
+create table if not exists user_prefs (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  theme      text default 'earthStone',
+  updated_at timestamptz default now()
+);
+alter table user_prefs enable row level security;
+drop policy if exists "own prefs" on user_prefs;
+create policy "own prefs" on user_prefs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 -- ───────────────────────── GEAR ───────────────────────────
 create table if not exists gear (
   id         text primary key,

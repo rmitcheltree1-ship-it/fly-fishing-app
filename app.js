@@ -8,7 +8,77 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.10-1";
+const APP_VERSION = "2026.06.10-2";
+
+// ---------- themes ----------
+// Each theme is a full set of the CSS variables declared in index.html's :root.
+// "--teal" is the app's white-text action color (buttons, active chips, FAB),
+// so it carries each theme's accent; "--gold" carries the water/secondary tone.
+const THEMES = {
+  earthStone: {
+    name: "Earth & Stone", description: "The original daylight look", dark: false, themeColor: "#f2ede3",
+    vars: {
+      "--bg": "#f2ede3", "--bg-rgb": "242, 237, 227", "--bg-2": "#e6dfd0", "--bg-3": "#d9d0be",
+      "--line": "#c2b8a6", "--fg": "#1e1a12", "--muted": "#72644f",
+      "--teal": "#2e7d5c", "--teal-2": "#1f5c41", "--gold": "#b8701a", "--yellow": "#c07830",
+      "--red": "#b83030", "--card": "#ffffff", "--skeleton-hi": "#ccc4b4",
+      "--shadow": "0 4px 16px rgba(0,0,0,0.12)",
+    },
+  },
+  tungTeal: {
+    name: "Tung & Teal", description: "Tungsten bead amber meets glacier water", dark: true, themeColor: "#141A14",
+    vars: {
+      "--bg": "#141A14", "--bg-rgb": "20, 26, 20", "--bg-2": "#1e2a1e", "--bg-3": "#2a352a",
+      "--line": "#2d3d2d", "--fg": "#e8ede8", "--muted": "#6a8a6a",
+      "--teal": "#C8860A", "--teal-2": "#a06c08", "--gold": "#4AADA0", "--yellow": "#C8860A",
+      "--red": "#d96055", "--card": "#1e2a1e", "--skeleton-hi": "#324232",
+      "--shadow": "0 6px 18px rgba(0,0,0,0.45)",
+    },
+  },
+  deepForest: {
+    name: "Deep Forest", description: "Pre-dawn cottonwoods and arctic melt", dark: true, themeColor: "#0F1714",
+    vars: {
+      "--bg": "#0F1714", "--bg-rgb": "15, 23, 20", "--bg-2": "#162018", "--bg-3": "#24362a",
+      "--line": "#1e2e22", "--fg": "#c8e0cc", "--muted": "#4a7055",
+      "--teal": "#5BB87A", "--teal-2": "#469962", "--gold": "#7EC8D8", "--yellow": "#5BB87A",
+      "--red": "#d96055", "--card": "#162018", "--skeleton-hi": "#2c4434",
+      "--shadow": "0 6px 18px rgba(0,0,0,0.5)",
+    },
+  },
+  lateEvening: {
+    name: "Late Evening", description: "Golden hour on canyon sandstone", dark: true, themeColor: "#1A1510",
+    vars: {
+      "--bg": "#1A1510", "--bg-rgb": "26, 21, 16", "--bg-2": "#221c12", "--bg-3": "#342a1a",
+      "--line": "#2e2518", "--fg": "#e8dfc8", "--muted": "#6a5a38",
+      "--teal": "#E87040", "--teal-2": "#c55a30", "--gold": "#60B8C8", "--yellow": "#E87040",
+      "--red": "#d96055", "--card": "#221c12", "--skeleton-hi": "#41331f",
+      "--shadow": "0 6px 18px rgba(0,0,0,0.5)",
+    },
+  },
+  fieldJournal: {
+    name: "Field Journal", description: "Worn parchment and deep pine ink", dark: false, themeColor: "#F2EDE4",
+    vars: {
+      "--bg": "#F2EDE4", "--bg-rgb": "242, 237, 228", "--bg-2": "#E8E0D4", "--bg-3": "#ded5c6",
+      "--line": "#ddd5c8", "--fg": "#2a2018", "--muted": "#8a7a68",
+      "--teal": "#1B5E3A", "--teal-2": "#14492d", "--gold": "#1A6070", "--yellow": "#9a5020",
+      "--red": "#b83030", "--card": "#ffffff", "--skeleton-hi": "#ccc4b4",
+      "--shadow": "0 4px 16px rgba(0,0,0,0.10)",
+    },
+  },
+};
+
+function applyTheme(key) {
+  const t = THEMES[key] || THEMES.earthStone;
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(t.vars)) root.style.setProperty(k, v);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", t.themeColor);
+}
+
+// Apply the saved theme immediately so the first paint isn't the wrong palette.
+let currentThemeKey = localStorage.getItem("flyfish_theme") || "earthStone";
+if (!THEMES[currentThemeKey]) currentThemeKey = "earthStone";
+applyTheme(currentThemeKey);
 
 const CARD_GRADIENTS = [
   ["#0d3d2a", "#226b48"],  // teal
@@ -4152,6 +4222,7 @@ async function fullSync() {
     toast("Sync failed — your data is safe on this device");
   }
   syncing = false;
+  loadRemoteTheme(); // adopt a theme picked on another device (fire-and-forget)
 }
 
 function rerenderCurrent() {
@@ -4161,6 +4232,64 @@ function rerenderCurrent() {
   else if (state.tab === "leaders") renderLeaders();
   else if (state.tab === "map") renderMap();
   else if (state.tab === "reports") renderReports();
+}
+
+// ---- theme persistence (localStorage + user_prefs in Supabase) ----
+
+async function setThemePref(key) {
+  if (!THEMES[key]) return;
+  currentThemeKey = key;
+  applyTheme(key);
+  localStorage.setItem("flyfish_theme", key);
+  try {
+    if (supaClient && currentUser) {
+      await supaClient.from("user_prefs").upsert({
+        user_id: currentUser.id,
+        theme: key,
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (e) { console.warn("Could not save theme preference:", e); }
+}
+
+// On sign-in / app open, adopt the cloud-saved theme if it differs.
+async function loadRemoteTheme() {
+  try {
+    if (!supaClient || !currentUser) return;
+    const { data } = await supaClient.from("user_prefs")
+      .select("theme").eq("user_id", currentUser.id).maybeSingle();
+    if (data?.theme && THEMES[data.theme] && data.theme !== currentThemeKey) {
+      currentThemeKey = data.theme;
+      applyTheme(data.theme);
+      localStorage.setItem("flyfish_theme", data.theme);
+    }
+  } catch (e) { console.warn("Could not load theme preference:", e); }
+}
+
+// Pill-style theme selector for the account sheet — each pill previews its own
+// palette (dot = accent, label colors from that theme), active one outlined.
+function appearanceSection() {
+  const wrap = el("div");
+  wrap.append(el("div", { style: "color:var(--muted); font-size:12px; margin:16px 0 8px; text-transform:uppercase; letter-spacing:0.05em; font-weight:600;", text: "Appearance" }));
+  for (const [key, t] of Object.entries(THEMES)) {
+    const active = key === currentThemeKey;
+    wrap.append(el("button", {
+      style: `display:flex; align-items:center; gap:12px; width:100%; text-align:left; padding:12px 16px; border-radius:14px; margin-bottom:8px; background:${t.vars["--bg-2"]}; border:1.5px solid ${active ? t.vars["--teal"] : "transparent"};`,
+      onclick: async (e) => {
+        e.preventDefault();
+        await setThemePref(key);
+        closeModal();
+        openAccountSheet();
+      },
+    }, [
+      el("span", { style: `width:12px; height:12px; border-radius:50%; background:${t.vars["--teal"]}; flex-shrink:0;` }),
+      el("div", {}, [
+        el("div", { style: `font-size:14px; font-weight:600; color:${t.vars["--teal"]};`, text: t.name }),
+        el("div", { style: `font-size:11px; margin-top:1px; color:${t.vars["--muted"]};`, text: t.description }),
+      ]),
+    ]));
+  }
+  return wrap;
 }
 
 // ---- account button + status ----
@@ -4227,6 +4356,7 @@ function openAccountSheet() {
         closeModal();
       },
     }));
+    body.append(appearanceSection());
     openModal(modalShell("Account", body));
     return;
   }
@@ -4304,6 +4434,7 @@ function openAccountSheet() {
   };
 
   body.append(signInBtn, signUpBtn);
+  body.append(appearanceSection());
   body.append(el("div", { style: "color:var(--muted); font-size:11px; text-align:center; margin-top:14px;", text: `Version ${APP_VERSION}` }));
   openModal(modalShell("Account", body));
 }
