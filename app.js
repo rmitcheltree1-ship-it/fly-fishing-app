@@ -3358,32 +3358,71 @@ function renderReports() {
     };
   };
 
-  const runGenerate = async (keyToUse) => {
+  // Preferred path: the ai-summary Edge Function (server-held key, any signed-in
+  // user). Throws {code} errors so the caller can decide whether to fall back.
+  const callEdgeFunction = async () => {
+    if (!supaClient || !currentUser) { const e = new Error("no session"); e.code = "no-session"; throw e; }
+    const { data: { session } } = await supaClient.auth.getSession();
+    if (!session) { const e = new Error("no session"); e.code = "no-session"; throw e; }
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-summary`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: SUPABASE_ANON_KEY,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ summary: buildSummaryPayload() }),
+    });
+    if (res.status === 404) { const e = new Error("function not deployed"); e.code = "not-deployed"; throw e; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    return data.text || "No response received.";
+  };
+
+  // Fallback: direct browser call with a personal key stored on this device.
+  const callDirect = async (key) => {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1000,
+        system: "You are a fly fishing coach analyzing an angler's personal trip log. Be specific, reference actual numbers, and give 1-2 actionable observations. Keep it to 4-5 sentences.",
+        messages: [{ role: "user", content: `Here is my season data: ${JSON.stringify(buildSummaryPayload())}` }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    return data?.content?.[0]?.text || "No response received.";
+  };
+
+  const runGenerate = async () => {
     summaryEl.innerHTML = "";
     summaryEl.append(el("div", { style: "color:var(--muted); font-size:13px; margin-top:8px;", text: "Analyzing your season…" }));
     regenerateBtn.style.display = "none";
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": keyToUse,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 350,
-          system: "You are a fly fishing coach analyzing an angler's personal trip log. Be specific, reference actual numbers, and give 1-2 actionable observations. Keep it to 4-5 sentences.",
-          messages: [{ role: "user", content: `Here is my season data: ${JSON.stringify(buildSummaryPayload())}` }],
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error?.message || `HTTP ${res.status}`);
+      let text;
+      try {
+        text = await callEdgeFunction();
+      } catch (e) {
+        if (e.code === "no-session" || e.code === "not-deployed") {
+          const k = localStorage.getItem("flyfish_anthropic_key");
+          if (!k) {
+            throw new Error(e.code === "no-session"
+              ? "Sign in (account button, top right) to use AI summaries — or add a personal API key below."
+              : "AI service not set up yet — deploy the ai-summary Edge Function, or add a personal API key below.");
+          }
+          text = await callDirect(k);
+        } else { throw e; }
       }
-      const data = await res.json();
-      const text = data?.content?.[0]?.text || "No response received.";
       summaryEl.innerHTML = "";
       summaryEl.append(el("div", { style: "font-size:13px; line-height:1.6; color:var(--fg); margin-top:8px; white-space:pre-wrap;", text: text }));
       regenerateBtn.style.display = "";
@@ -3394,36 +3433,33 @@ function renderReports() {
     }
   };
 
-  let keyInput = null, generateBtn = null;
+  const generateBtn = el("button", { class: "btn", style: "margin-top:10px;", text: "Generate Summary",
+    onclick: (e) => { e.preventDefault(); generateBtn.style.display = "none"; runGenerate(); },
+  });
+  regenerateBtn.onclick = (e) => { e.preventDefault(); runGenerate(); };
+  aiCard.append(aiTitle,
+    el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Signed in? Summaries run through the app's AI service — no setup needed." }),
+    generateBtn, summaryEl, regenerateBtn);
+
+  // Optional personal-key fallback for devices that aren't signed in.
   if (!apiKeyStored) {
-    const keyGroup = el("div", { class: "form-group", style: "margin-top:10px;" }, [
-      el("label", { text: "Anthropic API key" }),
+    const keyInput = el("input", { type: "password", placeholder: "sk-ant-… (optional fallback)", style: "flex:1; min-width:0;" });
+    aiCard.append(el("div", { class: "form-group", style: "margin-top:12px; margin-bottom:0;" }, [
+      el("label", { text: "Personal API key (optional — stored on this device only)" }),
       el("div", { style: "display:flex; gap:8px;" }, [
-        (keyInput = el("input", { type: "password", placeholder: "sk-ant-…", style: "flex:1; min-width:0;" })),
-        (generateBtn = el("button", { class: "btn", style: "flex-shrink:0;", text: "Generate",
-          onclick: async (e) => {
+        keyInput,
+        el("button", { class: "btn secondary", style: "flex-shrink:0; margin:0;", text: "Save",
+          onclick: (e) => {
             e.preventDefault();
             const k = keyInput.value.trim();
             if (!k.startsWith("sk-")) { toast("Enter a valid Anthropic API key (sk-ant-…)"); return; }
             localStorage.setItem("flyfish_anthropic_key", k);
-            keyGroup.remove();
-            await runGenerate(k);
+            toast("Key saved on this device");
+            renderReports();
           },
-        })),
+        }),
       ]),
-    ]);
-    regenerateBtn.onclick = (e) => {
-      e.preventDefault();
-      const k = localStorage.getItem("flyfish_anthropic_key");
-      if (k) { runGenerate(k); regenerateBtn.style.display = "none"; }
-    };
-    aiCard.append(aiTitle, el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Add your Anthropic API key once to enable AI summaries. Stored locally, never synced." }), keyGroup, summaryEl, regenerateBtn);
-  } else {
-    generateBtn = el("button", { class: "btn", style: "margin-top:10px;", text: "Generate Summary",
-      onclick: (e) => { e.preventDefault(); runGenerate(apiKeyStored); generateBtn.style.display = "none"; },
-    });
-    regenerateBtn.onclick = (e) => { e.preventDefault(); runGenerate(apiKeyStored); regenerateBtn.style.display = "none"; };
-    aiCard.append(aiTitle, generateBtn, summaryEl, regenerateBtn);
+    ]));
   }
   panel.append(aiCard);
 }
