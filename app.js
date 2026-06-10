@@ -856,7 +856,7 @@ async function fetchDWRSeries(abbrev) {
 }
 
 // Hand-drawn SVG hydrograph: filled area + line, min/max labels. No libraries.
-function sparklineEl(pts, unit = "cfs") {
+function sparklineEl(pts, unit = "cfs", startLabel = "7 days ago", endLabel = "now") {
   if (!pts || pts.length < 3) return null;
   const W = 300, H = 56, PAD = 3;
   const vs = pts.map(p => p.v);
@@ -876,9 +876,9 @@ function sparklineEl(pts, unit = "cfs") {
           `</svg>`,
   }));
   wrap.append(el("div", { style: "display:flex; justify-content:space-between; color:var(--muted); font-size:10px; margin-top:3px;" }, [
-    el("span", { text: "7 days ago" }),
+    el("span", { text: startLabel }),
     el("span", { text: `${Math.round(vMin)}–${Math.round(vMax)} ${unit}` }),
-    el("span", { text: "now" }),
+    el("span", { text: endLabel }),
   ]));
   return wrap;
 }
@@ -900,6 +900,48 @@ async function fetchDWRDaily(abbrev, dateStr) {
   try { out.flowCFS = await getVal("DISCHRG"); } catch (_) {}
   try { out.gaugeHeightFt = await getVal("GAGE_HT"); } catch (_) {}
   return out;
+}
+
+// NOAA NWPS flow forecast (National Water Prediction Service). Only NWS
+// forecast points carry one — returns [] elsewhere. Accepts USGS site codes.
+async function fetchFlowForecast(siteCode) {
+  const r = await fetch(`https://api.water.noaa.gov/nwps/v1/gauges/${encodeURIComponent(siteCode)}/stageflow`);
+  if (!r.ok) return [];
+  const data = await r.json();
+  const fc = data?.forecast;
+  const pts = (fc?.data ?? [])
+    .map(x => ({
+      t: Date.parse(x.validTime),
+      v: x.secondary != null ? x.secondary * (fc.secondaryUnits === "kcfs" ? 1000 : 1) : NaN,
+    }))
+    .filter(p => isFinite(p.t) && isFinite(p.v) && p.v >= 0);
+  return pts;
+}
+
+// 7-day daily weather forecast for the Forecast card.
+async function fetchWeatherForecastDaily(lat, lon) {
+  const qs = new URLSearchParams({
+    latitude: lat, longitude: lon,
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
+    temperature_unit: "fahrenheit", wind_speed_unit: "mph",
+    forecast_days: "7", timezone: "auto",
+  });
+  const r = await fetch(`https://api.open-meteo.com/v1/forecast?${qs}`);
+  if (!r.ok) throw new Error(`Open-Meteo ${r.status}`);
+  return (await r.json())?.daily ?? null;
+}
+
+function weatherEmoji(code) {
+  if (code === 0) return "☀️";
+  if (code <= 2) return "🌤";
+  if (code === 3) return "☁️";
+  if (code <= 48) return "🌫";
+  if (code <= 57) return "🌦";
+  if (code <= 67) return "🌧";
+  if (code <= 77) return "🌨";
+  if (code <= 82) return "🌧";
+  if (code <= 86) return "🌨";
+  return "⛈";
 }
 
 function compass(deg) {
@@ -1557,6 +1599,11 @@ async function openRiver(id) {
     renderFlowLevel(r, flowCard);
   }
 
+  // Forecast — 7-day weather for every water; NOAA flow forecast where issued.
+  const forecastCard = el("div", { class: "card" });
+  body.append(forecastCard);
+  renderForecastCard(r, forecastCard);
+
   // My History — personal trip log on this water (all derived from trips).
   const stats = waterStats(r);
   if (stats) {
@@ -1645,6 +1692,58 @@ async function openRiver(id) {
   }, 50);
 
   refreshRiverConditions(r, metrics);
+}
+
+// Forecast card: 7-day weather strip (all waters) + NOAA flow forecast where
+// the gauge is an NWS forecast point (most gauges aren't — omitted silently).
+async function renderForecastCard(r, card) {
+  card.append(el("h3", { text: "Forecast" }));
+  const bodyEl = el("div");
+  card.append(bodyEl);
+  bodyEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "Loading…" }));
+
+  const wantFlow = r.waterType !== "still" && r.siteCode && r.source !== "dwr";
+  const [wxRes, flowRes] = await Promise.allSettled([
+    fetchWeatherForecastDaily(r.lat, r.lon),
+    wantFlow ? fetchFlowForecast(r.siteCode) : Promise.resolve([]),
+  ]);
+  bodyEl.innerHTML = "";
+
+  const wx = wxRes.status === "fulfilled" ? wxRes.value : null;
+  if (wx?.time?.length) {
+    const strip = el("div", { style: "display:flex; gap:4px;" });
+    wx.time.forEach((d, i) => {
+      const day = new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short" });
+      strip.append(el("div", { style: "flex:1 1 0; min-width:0; text-align:center; padding:7px 2px; background:var(--bg-2); border-radius:10px;" }, [
+        el("div", { style: "font-size:9px; color:var(--muted); text-transform:uppercase; letter-spacing:0.03em;", text: i === 0 ? "Today" : day }),
+        el("div", { style: "font-size:16px; margin:2px 0; line-height:1.2;", text: weatherEmoji(wx.weather_code?.[i]) }),
+        el("div", { style: "font-size:11px; font-weight:700;", text: `${Math.round(wx.temperature_2m_max?.[i])}°` }),
+        el("div", { style: "font-size:10px; color:var(--muted);", text: `${Math.round(wx.temperature_2m_min?.[i])}°` }),
+        (wx.precipitation_probability_max?.[i] ?? 0) >= 20
+          ? el("div", { style: "font-size:9px; color:#3a7bd5; font-weight:600;", text: `${wx.precipitation_probability_max[i]}%` })
+          : null,
+      ]));
+    });
+    bodyEl.append(strip);
+  } else {
+    bodyEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "Weather forecast unavailable right now." }));
+  }
+
+  const fpts = flowRes.status === "fulfilled" ? (flowRes.value || []) : [];
+  if (fpts.length > 2) {
+    const last = fpts[fpts.length - 1];
+    const cur = r.lastCFS;
+    const verb = (cur != null && isFinite(cur) && cur > 0)
+      ? (last.v / cur > 1.1 ? "rising to" : last.v / cur < 0.9 ? "dropping to" : "holding near")
+      : "around";
+    const when = new Date(last.t).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    bodyEl.append(el("div", { style: "margin-top:12px; font-size:13px;" }, [
+      el("span", { style: "font-weight:700;", text: "NOAA flow forecast: " }),
+      el("span", { text: `${verb} ${Math.round(last.v).toLocaleString()} cfs by ${when}` }),
+    ]));
+    const spark = sparklineEl(fpts, "cfs", "now", when);
+    if (spark) bodyEl.append(spark);
+  }
 }
 
 function conditionsGridSkeleton() {
