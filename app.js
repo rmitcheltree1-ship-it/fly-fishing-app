@@ -828,6 +828,61 @@ async function fetchWeatherArchive(lat, lon, dateStr, hour = 12) {
   return null;
 }
 
+// Last-7-days flow series for the hydrograph sparkline. Returns [{t, v}] or [].
+async function fetchUSGSSeries(siteCode) {
+  const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${encodeURIComponent(siteCode)}&period=P7D&parameterCd=00060&siteStatus=all`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`USGS ${r.status}`);
+  const data = await r.json();
+  const vals = data?.value?.timeSeries?.[0]?.values?.[0]?.value ?? [];
+  const pts = vals
+    .map(x => ({ t: Date.parse(x.dateTime), v: parseFloat(x.value) }))
+    .filter(p => isFinite(p.t) && isFinite(p.v) && p.v > -100000);
+  // 7 days at 15-min readings ≈ 670 points — thin to ~100 for a tiny SVG.
+  const step = Math.max(1, Math.floor(pts.length / 100));
+  return pts.filter((_, i) => i % step === 0);
+}
+
+async function fetchDWRSeries(abbrev) {
+  const fmt = (d) => `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${d.getFullYear()}`;
+  const end = new Date(), start = new Date(Date.now() - 7 * 86400000);
+  const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrytimeseriesday/?format=json&abbrev=${encodeURIComponent(abbrev)}&parameter=DISCHRG&startDate=${encodeURIComponent(fmt(start))}&endDate=${encodeURIComponent(fmt(end))}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`DWR ${r.status}`);
+  const list = (await r.json()).ResultList ?? [];
+  return list
+    .map(x => ({ t: Date.parse(x.measDate), v: x.measValue != null && x.measValue !== "" ? parseFloat(x.measValue) : NaN }))
+    .filter(p => isFinite(p.t) && isFinite(p.v));
+}
+
+// Hand-drawn SVG hydrograph: filled area + line, min/max labels. No libraries.
+function sparklineEl(pts, unit = "cfs") {
+  if (!pts || pts.length < 3) return null;
+  const W = 300, H = 56, PAD = 3;
+  const vs = pts.map(p => p.v);
+  const vMin = Math.min(...vs), vMax = Math.max(...vs);
+  const span = (vMax - vMin) || 1;
+  const x = (i) => PAD + (i / (pts.length - 1)) * (W - 2 * PAD);
+  const y = (v) => H - PAD - ((v - vMin) / span) * (H - 2 * PAD);
+  let line = "";
+  pts.forEach((p, i) => { line += `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`; });
+  const area = `${line}L${x(pts.length - 1).toFixed(1)},${H - PAD}L${x(0).toFixed(1)},${H - PAD}Z`;
+  const wrap = el("div", { style: "margin-top:12px;" });
+  wrap.append(el("div", {
+    html: `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:56px; display:block;" preserveAspectRatio="none">` +
+          `<path d="${area}" fill="rgba(34,107,72,0.16)"/>` +
+          `<path d="${line}" fill="none" stroke="var(--teal)" stroke-width="1.8" vector-effect="non-scaling-stroke"/>` +
+          `<circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(pts[pts.length - 1].v).toFixed(1)}" r="2.6" fill="var(--teal)"/>` +
+          `</svg>`,
+  }));
+  wrap.append(el("div", { style: "display:flex; justify-content:space-between; color:var(--muted); font-size:10px; margin-top:3px;" }, [
+    el("span", { text: "7 days ago" }),
+    el("span", { text: `${Math.round(vMin)}–${Math.round(vMax)} ${unit}` }),
+    el("span", { text: "now" }),
+  ]));
+  return wrap;
+}
+
 // Colorado DWR daily values for a past date (YYYY-MM-DD). DWR wants MM/DD/YYYY.
 async function fetchDWRDaily(abbrev, dateStr) {
   const [y, m, d] = dateStr.split("-");
@@ -1632,15 +1687,17 @@ async function renderFlowLevel(r, card) {
   card.append(bodyEl);
   bodyEl.append(el("div", { style: "color:var(--muted); font-size:13px;", text: "Loading…" }));
 
-  let flow = r.lastCFS, stats = null;
-  try {
-    const u = r.source === "dwr" ? await fetchDWR(r.siteCode) : await fetchUSGS(r.siteCode);
-    if (u?.flowCFS != null) flow = u.flowCFS;
-  } catch (_) {}
-  // Historical percentile stats exist for USGS gauges only.
-  if (r.source !== "dwr") {
-    try { stats = await fetchUSGSStats(r.siteCode); } catch (_) {}
-  }
+  let flow = r.lastCFS, stats = null, series = [];
+  const isDWRsrc = r.source === "dwr";
+  // Live flow, percentile stats (USGS only), and the 7-day series in parallel.
+  const [uRes, statsRes, seriesRes] = await Promise.allSettled([
+    isDWRsrc ? fetchDWR(r.siteCode) : fetchUSGS(r.siteCode),
+    isDWRsrc ? Promise.resolve(null) : fetchUSGSStats(r.siteCode),
+    isDWRsrc ? fetchDWRSeries(r.siteCode) : fetchUSGSSeries(r.siteCode),
+  ]);
+  if (uRes.status === "fulfilled" && uRes.value?.flowCFS != null) flow = uRes.value.flowCFS;
+  if (statsRes.status === "fulfilled") stats = statsRes.value;
+  if (seriesRes.status === "fulfilled") series = seriesRes.value || [];
 
   bodyEl.innerHTML = "";
   const hasIdeal = r.idealFlowMin != null && r.idealFlowMax != null;
@@ -1678,6 +1735,10 @@ async function renderFlowLevel(r, card) {
       el("span", { text: "Low" }), el("span", { text: "Normal" }), el("span", { text: "High" }),
     ]));
   }
+
+  // 7-day hydrograph — shape beats any single number (rising limb, dam pulses).
+  const spark = sparklineEl(series);
+  if (spark) bodyEl.append(spark);
 
   // Ideal-range editor
   const minIn = el("input", { type: "number", step: "any", placeholder: "min", value: r.idealFlowMin ?? "", style: "width:80px;" });
