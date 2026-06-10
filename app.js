@@ -3463,15 +3463,22 @@ function renderReports() {
     if (!supaClient || !currentUser) { const e = new Error("no session"); e.code = "no-session"; throw e; }
     const { data: { session } } = await supaClient.auth.getSession();
     if (!session) { const e = new Error("no session"); e.code = "no-session"; throw e; }
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-summary`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        apikey: SUPABASE_ANON_KEY,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ summary: buildSummaryPayload() }),
-    });
+    let res;
+    try {
+      res = await fetch(`${SUPABASE_URL}/functions/v1/ai-summary`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: SUPABASE_ANON_KEY,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ summary: buildSummaryPayload() }),
+      });
+    } catch (_) {
+      // A missing function 404s without CORS headers, so the browser surfaces
+      // it as a network error ("Failed to fetch") — treat it as not-deployed.
+      const e = new Error("AI service unreachable"); e.code = "not-deployed"; throw e;
+    }
     if (res.status === 404) { const e = new Error("function not deployed"); e.code = "not-deployed"; throw e; }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
