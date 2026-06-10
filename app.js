@@ -2120,7 +2120,7 @@ function renderTrips() {
   }
 
   for (const t of state.trips) {
-    const row = el("div", { class: "card trip-row", onclick: () => openTrip(t.id) }, [
+    const info = el("div", { style: "flex:1; min-width:0;" }, [
       el("div", { class: "top" }, [
         el("div", { class: "where", text: t.riverName }),
         el("div", { class: "when", text: new Date(t.date).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) }),
@@ -2130,8 +2130,13 @@ function renderTrips() {
         t.flowCFS != null ? `${Math.round(t.flowCFS)} cfs` : null,
         t.waterTempF != null ? `${Math.round(t.waterTempF)}° water` : null,
         t.fishLanded ? `${t.fishLanded} fish` : null,
+        t.photos?.length ? `📷 ${t.photos.length}` : null,
         t.memoCount ? `🎤 ${t.memoCount} memo${t.memoCount>1?"s":""}` : null,
       ].filter(Boolean).join(" · ") }),
+    ]);
+    const row = el("div", { class: "card trip-row", style: "display:flex; gap:10px; align-items:center;", onclick: () => openTrip(t.id) }, [
+      info,
+      t.photos?.length ? el("img", { src: t.photos[0], alt: "", style: "width:56px; height:56px; object-fit:cover; border-radius:10px; flex-shrink:0;" }) : null,
     ]);
     panel.append(row);
   }
@@ -2402,6 +2407,28 @@ function openGearEdit(existing = null) {
   openModal(modalShell(existing ? "Edit gear" : "Add gear", body, footer));
 }
 
+// Downscale a photo file to a JPEG data URL (max 1400px long edge) so trip
+// records stay small enough to sync as text columns.
+function downscalePhoto(file, maxDim = 1400, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      } catch (e) { reject(e); }
+      finally { URL.revokeObjectURL(url); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Couldn't read image")); };
+    img.src = url;
+  });
+}
+
 // Local datetime-local string (YYYY-MM-DDTHH:mm) for an epoch-ms value.
 function toLocalInput(ms) {
   const d = new Date(ms);
@@ -2426,6 +2453,7 @@ async function newTripModal(prefRiver, editTrip = null) {
     coords: editTrip ? { lat: editTrip.lat, lon: editTrip.lon } : null,
     dataSource: editTrip?.dataSource ?? "usgs",
     pendingMemos: [], // { blob, mime, duration, label, name }
+    photos: [...(editTrip?.photos ?? [])], // JPEG data URLs (downscaled)
   };
   const selectedGear = new Set(editTrip?.gearUids ?? []);
   const selectedFlies = new Set(editTrip?.flyUids ?? []);
@@ -2604,6 +2632,41 @@ async function newTripModal(prefRiver, editTrip = null) {
   }
   body.append(gearCard);
 
+  // Photos — downscaled JPEGs stored on the trip (max 4)
+  const photoCard = el("div", { class: "card" });
+  photoCard.append(el("h3", { text: "Photos" }));
+  const photoStrip = el("div", { style: "display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;" });
+  const renderPhotoStrip = () => {
+    photoStrip.innerHTML = "";
+    formState.photos.forEach((dataUrl, i) => {
+      const cell = el("div", { style: "position:relative; width:72px; height:72px;" });
+      cell.append(el("img", { src: dataUrl, alt: `Photo ${i + 1}`, style: "width:100%; height:100%; object-fit:cover; border-radius:10px;" }));
+      cell.append(el("button", {
+        text: "×", "aria-label": "Remove photo",
+        style: "position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:50%; background:var(--red); color:#fff; border:0; font-size:14px; line-height:1;",
+        onclick: (ev) => { ev.preventDefault(); formState.photos.splice(i, 1); renderPhotoStrip(); },
+      }));
+      photoStrip.append(cell);
+    });
+  };
+  renderPhotoStrip();
+  const photoInput = el("input", { type: "file", accept: "image/*", multiple: true, style: "display:none" });
+  photoInput.onchange = async (e) => {
+    for (const file of [...(e.target.files || [])]) {
+      if (formState.photos.length >= 4) { toast("Up to 4 photos per trip"); break; }
+      try { formState.photos.push(await downscalePhoto(file)); } catch (_) { toast("Couldn't read that image"); }
+    }
+    photoInput.value = "";
+    renderPhotoStrip();
+  };
+  const addPhotoBtn = el("button", {
+    class: "btn secondary",
+    html: `${icon(ICONS.camera, 18)} <span>Add photos</span>`,
+    onclick: (e) => { e.preventDefault(); photoInput.click(); },
+  });
+  photoCard.append(photoStrip, addPhotoBtn, photoInput);
+  body.append(photoCard);
+
   // Voice memos
   const memoCard = el("div", { class: "card" });
   memoCard.append(el("h3", { text: "Voice memos" }));
@@ -2658,6 +2721,7 @@ async function newTripModal(prefRiver, editTrip = null) {
           notes: formState.notes,
           gearUids: [...selectedGear],
           flyUids: [...selectedFlies],
+          photos: formState.photos,
           memoCount: (editTrip?.memoCount || 0) + formState.pendingMemos.length,
           dataSource: formState.dataSource || "usgs",
         };
@@ -2769,6 +2833,25 @@ async function openTrip(id) {
     style: "color:var(--muted); font-size:13px; margin-bottom:8px;",
     text: `${new Date(t.date).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}${t.locationLabel ? " · " + t.locationLabel : ""}`,
   }));
+
+  // Photos — swipeable strip, tap to view full-size
+  if (t.photos?.length) {
+    const strip = el("div", { style: "display:flex; gap:8px; overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:12px;" });
+    for (const dataUrl of t.photos) {
+      strip.append(el("img", {
+        src: dataUrl, alt: "Trip photo",
+        style: `flex:0 0 auto; height:180px; ${t.photos.length === 1 ? "width:100%;" : "max-width:85%;"} object-fit:cover; border-radius:14px; cursor:pointer;`,
+        onclick: () => {
+          const viewer = el("div", {
+            style: "position:fixed; inset:0; background:rgba(0,0,0,0.92); z-index:300; display:flex; align-items:center; justify-content:center;",
+            onclick: () => viewer.remove(),
+          }, [el("img", { src: dataUrl, style: "max-width:100%; max-height:100%; object-fit:contain;" })]);
+          document.body.append(viewer);
+        },
+      }));
+    }
+    body.append(strip);
+  }
 
   if (t.lat != null && t.lon != null) {
     body.append(el("div", { class: "card", style: "padding:0; overflow:hidden;" }, [
@@ -3789,6 +3872,7 @@ function toRemote(store, rec, userId) {
   if (store === "trips") {
     out.gear_uids = JSON.stringify(rec.gearUids || []);
     out.fly_uids = JSON.stringify(rec.flyUids || []);
+    out.photos = JSON.stringify(rec.photos || []);
   }
   return out;
 }
@@ -3804,6 +3888,7 @@ function fromRemote(store, row) {
   if (store === "trips") {
     out.gearUids = safeParseArr(row.gear_uids);
     out.flyUids = safeParseArr(row.fly_uids);
+    out.photos = safeParseArr(row.photos);
   }
   return out;
 }

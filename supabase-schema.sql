@@ -67,6 +67,7 @@ create table if not exists trips (
   water_type      text,
   gear_uids       text,
   fly_uids        text,
+  photos          text,
   updated_at      timestamptz default now(),
   deleted         boolean default false
 );
@@ -76,6 +77,7 @@ alter table trips add column if not exists gear_uids    text;
 alter table trips add column if not exists fly_uids     text;
 alter table trips add column if not exists elevation_ft double precision;
 alter table trips add column if not exists water_type   text;
+alter table trips add column if not exists photos       text;
 
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
