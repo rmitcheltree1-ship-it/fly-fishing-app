@@ -6,6 +6,10 @@
 
 // ---------- constants ----------
 
+// Bump on every release, together with CACHE in sw.js (kept in lockstep so the
+// version shown in the account sheet always matches the cached shell).
+const APP_VERSION = "2026.06.10-1";
+
 const CARD_GRADIENTS = [
   ["#0d3d2a", "#226b48"],  // teal
   ["#0d2240", "#1a4070"],  // blue
@@ -3920,6 +3924,7 @@ function openAccountSheet() {
     body.append(el("div", { class: "card" }, [
       el("div", { class: "row" }, [el("span", { class: "label", text: "Signed in" }), el("span", { class: "value", text: currentUser.email || "—" })]),
       el("div", { class: "row" }, [el("span", { class: "label", text: "Last synced" }), el("span", { class: "value", text: fmtLastSynced() })]),
+      el("div", { class: "row" }, [el("span", { class: "label", text: "App version" }), el("span", { class: "value", text: APP_VERSION })]),
     ]));
     body.append(el("button", {
       class: "btn", style: "margin-top:8px;",
@@ -4011,6 +4016,7 @@ function openAccountSheet() {
   };
 
   body.append(signInBtn, signUpBtn);
+  body.append(el("div", { style: "color:var(--muted); font-size:11px; text-align:center; margin-top:14px;", text: `Version ${APP_VERSION}` }));
   openModal(modalShell("Account", body));
 }
 

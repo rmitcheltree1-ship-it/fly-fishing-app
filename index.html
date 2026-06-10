@@ -338,6 +338,21 @@
     }
     .toast.show { opacity: 1; }
 
+    .update-banner {
+      position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(20px);
+      display: flex; align-items: center; gap: 12px;
+      background: var(--teal); color: #fff;
+      padding: 10px 12px 10px 16px; border-radius: 22px;
+      box-shadow: var(--shadow); font-size: 14px; font-weight: 600;
+      opacity: 0; pointer-events: none; transition: opacity 0.25s, transform 0.25s;
+      z-index: 210;
+    }
+    .update-banner.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+    .update-banner button {
+      background: rgba(255,255,255,0.22); color: #fff; border: 0;
+      padding: 6px 14px; border-radius: 16px; font-weight: 700; font-size: 13px;
+    }
+
     .diagram {
       background: var(--bg-3); padding: 12px; border-radius: 10px;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -529,11 +544,24 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="app.js"></script>
 
+<div id="update-banner" class="update-banner">
+  <span>New version ready</span>
+  <button id="update-reload-btn">Reload</button>
+</div>
+
 <script>
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    // True only when a previous version controls the page — distinguishes a
+    // real update from the very first install (which also fires controllerchange).
+    const hadController = !!navigator.serviceWorker.controller;
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('sw.js').catch(()=>{});
     });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) return;
+      document.getElementById('update-banner').classList.add('show');
+    });
+    document.getElementById('update-reload-btn').addEventListener('click', () => location.reload());
   }
 </script>
 

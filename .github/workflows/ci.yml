@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Syntax-check JavaScript
+        run: |
+          node --check app.js
+          node --check sw.js
+
+      - name: Versions in lockstep (app.js vs sw.js)
+        run: |
+          APP=$(grep -oP 'const APP_VERSION = "\K[^"]+' app.js)
+          SW=$(grep -oP 'const VERSION = "\K[^"]+' sw.js)
+          echo "app.js=$APP sw.js=$SW"
+          test "$APP" = "$SW" || { echo "::error::APP_VERSION ($APP) != sw.js VERSION ($SW) — bump both together"; exit 1; }
