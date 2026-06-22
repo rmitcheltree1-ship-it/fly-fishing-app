@@ -489,7 +489,8 @@
 </header>
 
 <main>
-  <section id="panel-rivers" class="panel active"></section>
+  <section id="panel-home" class="panel active"></section>
+  <section id="panel-rivers" class="panel"></section>
   <section id="panel-trips" class="panel"></section>
   <section id="panel-flies" class="panel"></section>
   <section id="panel-leaders" class="panel"></section>
@@ -498,29 +499,25 @@
 </main>
 
 <nav class="tabs" id="tabs">
-  <button data-tab="rivers" class="active" aria-label="Waters">
+  <button data-tab="home" class="active" aria-label="Home">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l9 8h-3v9h-4v-6h-4v6H6v-9H3l9-8z"/></svg>
+    <span>Home</span>
+  </button>
+  <button data-tab="rivers" aria-label="Waters">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2s7 8.5 7 13a7 7 0 11-14 0c0-4.5 7-13 7-13z"/></svg>
     <span>Waters</span>
   </button>
-  <button data-tab="trips" aria-label="Trips">
+  <button data-tab="trips" aria-label="Log">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 4a2 2 0 012-2h11a3 3 0 013 3v15a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm3 1v14h11V5H7z"/></svg>
-    <span>Trips</span>
+    <span>Log</span>
   </button>
-  <button data-tab="flies" aria-label="Flies">
-    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2 2 3 5 3 7s-1 4-3 4-3-2-3-4 1-5 3-7zm-6 9c2 0 5 1 7 3s3 5 3 7c-2 0-5-1-7-3s-3-5-3-7zm12 0c0 2-1 5-3 7s-5 3-7 3c0-2 1-5 3-7s5-3 7-3z"/></svg>
-    <span>Flies</span>
-  </button>
-  <button data-tab="leaders" aria-label="Leaders">
-    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.7 6.3l3 3-3 3 1.4 1.4 4.4-4.4-4.4-4.4-1.4 1.4zM9.3 6.3L7.9 4.9 3.5 9.3l4.4 4.4 1.4-1.4-3-3 3-3zM5 17h14v2H5z"/></svg>
-    <span>Leaders</span>
-  </button>
-  <button data-tab="map" aria-label="Map">
-    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 3L3 5v16l6-2 6 2 6-2V3l-6 2-6-2zm0 2.2l6 2v13.6l-6-2V5.2z"/></svg>
-    <span>Map</span>
-  </button>
-  <button data-tab="reports" aria-label="Reports">
+  <button data-tab="reports" aria-label="Insights">
     <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 20V9h4v11H4zm6 0V4h4v16h-4zm6 0v-6h4v6h-4z"/></svg>
-    <span>Reports</span>
+    <span>Insights</span>
+  </button>
+  <button data-tab="flies" aria-label="Fly Box">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c2 2 3 5 3 7s-1 4-3 4-3-2-3-4 1-5 3-7zm-6 9c2 0 5 1 7 3s3 5 3 7c-2 0-5-1-7-3s-3-5-3-7zm12 0c0 2-1 5-3 7s-5 3-7 3c0-2 1-5 3-7s5-3 7-3z"/></svg>
+    <span>Fly Box</span>
   </button>
 </nav>
 

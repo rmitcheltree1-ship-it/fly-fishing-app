@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.22-1";
+const APP_VERSION = "2026.06.22-2";
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -1070,7 +1070,7 @@ function fmtTime(iso) {
 
 const state = {
   db: null,
-  tab: "rivers",
+  tab: "home",
   rivers: [],
   trips: [],
   flies: [],
@@ -1230,8 +1230,11 @@ function modalShell(title, body, footer) {
 function switchTab(name) {
   state.tab = name;
   $$(".panel").forEach(p => p.classList.toggle("active", p.id === `panel-${name}`));
-  $$("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-  if (name === "rivers") renderRivers();
+  // Map + Leaders are folded into Waters + Fly Box — keep their parent tab lit.
+  const navName = name === "map" ? "rivers" : name === "leaders" ? "flies" : name;
+  $$("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === navName));
+  if (name === "home") renderHome();
+  else if (name === "rivers") renderRivers();
   else if (name === "trips") renderTrips();
   else if (name === "flies") renderFlies();
   else if (name === "leaders") renderLeaders();
@@ -1243,6 +1246,169 @@ $("#tabs").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (b) switchTab(b.dataset.tab);
 });
+
+// ---------- home (dashboard) ----------
+
+// Plain-language sky from a trip's cached weather.
+function wxWord(t) {
+  if (t.precipIn != null && t.precipIn > 0.01) return "wet";
+  if (t.cloudPct == null) return null;
+  if (t.cloudPct < 25) return "clear";
+  if (t.cloudPct < 70) return "partly cloudy";
+  return "overcast";
+}
+
+// Waters to feature in the "Conditions" strip: starred gauged rivers first,
+// then recently-fished gauged rivers, de-duped, up to `n`.
+function featuredWaters(n = 2) {
+  const seen = new Set(), out = [];
+  const add = (r) => { if (r && r.siteCode && !seen.has(r.id)) { seen.add(r.id); out.push(r); } };
+  state.rivers.filter(r => r.favorite).forEach(add);
+  recentWaters(8).forEach(add);
+  return out.slice(0, n);
+}
+
+function renderHome() {
+  setHeader("current", `${new Date().getFullYear()} season`, [
+    el("button", { class: "icon-btn", "aria-label": "Quick session", html: icon(ICONS.plus, 18), onclick: () => startSessionSheet() }),
+  ]);
+  const panel = $("#panel-home");
+  panel.innerHTML = "";
+
+  const trips = myTrips();
+  const year = new Date().getFullYear();
+  const yearTrips = trips.filter(t => t.date && new Date(t.date).getFullYear() === year);
+  const yearFish = yearTrips.reduce((s, t) => s + (t.fishLanded || 0), 0);
+  const feat = featuredWaters(2);
+  const heroWater = feat[0];
+
+  // ── Hero ──
+  const heroBig = (val, label, color) => el("div", { style: "flex:1; min-width:0;" }, [
+    el("div", { style: `font-size:26px; font-weight:800; letter-spacing:-0.5px; color:${color}; line-height:1;`, text: String(val) }),
+    el("div", { style: "font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-top:4px;", text: label }),
+  ]);
+  const heroVal = heroWater
+    ? (heroWater.waterType === "still"
+        ? (heroWater.lastElevationFt != null ? Math.round(heroWater.lastElevationFt) : "—")
+        : (heroWater.lastCFS != null ? Math.round(heroWater.lastCFS) : "—"))
+    : "—";
+  const heroValLabel = heroWater
+    ? `${heroWater.name.split(" ").slice(0, 2).join(" ")} ${heroWater.waterType === "still" ? "ft" : "cfs"}`
+    : "no water starred";
+  panel.append(el("div", { style: "background:var(--bg-2); border-bottom:1px solid var(--line); padding:14px 16px 18px;" }, [
+    el("div", { style: "font-size:26px; font-weight:800; letter-spacing:-0.5px;", text: "current" }),
+    el("div", { style: "font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; margin-top:2px;", text: `${year} season` }),
+    el("div", { style: "display:flex; gap:18px; margin-top:16px;" }, [
+      heroBig(yearTrips.length, "trips this year", "var(--teal)"),
+      heroBig(yearFish, "fish landed", "var(--teal)"),
+      heroBig(heroVal, heroValLabel, "var(--gold)"),
+    ]),
+  ]));
+
+  const wrap = el("div", { style: "padding:0 16px 20px;" });
+  panel.append(wrap);
+
+  const sectionLbl = (text) => el("div", { style: "font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.09em; padding:18px 0 8px;", text });
+
+  // ── Conditions ──
+  if (feat.length) {
+    wrap.append(sectionLbl("Conditions"));
+    const row = el("div", { style: "display:flex; gap:10px;" });
+    feat.forEach(r => {
+      const isStill = r.waterType === "still";
+      const val = isStill ? r.lastElevationFt : r.lastCFS;
+      const fc = classifyFlow(r);
+      const ts = tempStatus(r);
+      const status = fc ? { text: fc.label, color: fc.color }
+        : (ts && ts.warn) ? { text: ts.short, color: ts.color }
+        : { text: r.lastReadingAt ? "current" : "tap to load", color: "var(--muted)" };
+      const card = el("button", {
+        style: "flex:1; min-width:0; text-align:left; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px;",
+        onclick: () => openRiver(r.id),
+      }, [
+        el("div", { style: "font-size:11px; color:var(--muted); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: r.name }),
+        el("div", { style: "font-size:18px; font-weight:700; color:var(--gold); margin-top:3px;", text: val != null ? `${Math.round(val)} ${isStill ? "ft" : "cfs"}` : "—" }),
+        el("div", { style: `font-size:11px; margin-top:2px; color:${status.color}; font-weight:600;`, text: status.text }),
+        el("div", { class: `home-spark home-spark-${r.id}` }),
+      ]);
+      row.append(card);
+    });
+    wrap.append(row);
+    // Lazily draw 7-day sparklines into each card.
+    feat.forEach(async (r) => {
+      try {
+        const pts = r.source === "dwr" ? await fetchDWRSeries(r.siteCode) : await fetchUSGSSeries(r.siteCode);
+        const host = wrap.querySelector(`.home-spark-${r.id}`);
+        const spark = sparklineEl(pts, isStillUnit(r));
+        if (host && spark) { host.innerHTML = ""; host.append(spark); }
+      } catch (_) {}
+    });
+  }
+
+  // ── Recent trips ──
+  if (trips.length) {
+    wrap.append(sectionLbl("Recent trips"));
+    [...trips].sort((a, b) => (b.date || 0) - (a.date || 0)).slice(0, 3).forEach(t => {
+      const fish = t.fishLanded || 0;
+      const flies = tripFliesDisplay(t);
+      const sky = wxWord(t);
+      const meta = [
+        t.flowCFS != null ? `${Math.round(t.flowCFS)} cfs` : (t.elevationFt != null ? `${Math.round(t.elevationFt)} ft` : null),
+        t.waterTempF != null ? `${Math.round(t.waterTempF)}°F` : null,
+        sky,
+      ].filter(Boolean).join("  ·  ");
+      const tags = el("div", { style: "display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;" });
+      if (fish) tags.append(el("span", { style: "font-size:11px; font-weight:600; color:var(--teal); background:var(--bg-3); padding:3px 9px; border-radius:999px;", text: `${fish} fish` }));
+      if (flies && flies !== "—") tags.append(el("span", { style: "font-size:11px; font-weight:600; color:var(--gold); background:var(--bg-3); padding:3px 9px; border-radius:999px; max-width:60%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;", text: flies }));
+      wrap.append(el("button", {
+        style: "display:block; width:100%; text-align:left; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:10px;",
+        onclick: () => openTrip(t.id),
+      }, [
+        el("div", { style: "display:flex; justify-content:space-between; align-items:baseline; gap:10px;" }, [
+          el("div", { style: "font-weight:700; font-size:15px;", text: t.riverName }),
+          el("div", { style: "font-size:12px; color:var(--muted); flex-shrink:0;", text: new Date(t.date).toLocaleDateString(undefined, { month: "short", day: "numeric" }) }),
+        ]),
+        tags,
+        meta ? el("div", { style: "font-size:12px; color:var(--muted); margin-top:8px;", text: meta }) : null,
+      ]));
+    });
+  }
+
+  // ── "current suggests" (heuristic, no API) ──
+  const tip = homeSuggestion(heroWater);
+  if (tip) {
+    wrap.append(el("div", { style: "background:var(--bg-2); border:1px solid var(--line); border-left:3px solid var(--gold); border-radius:10px; padding:12px 14px; margin-top:6px;" }, [
+      el("div", { style: "font-size:10px; color:var(--gold); text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-bottom:5px;", text: "current suggests" }),
+      el("div", { style: "font-size:13px; line-height:1.55; color:var(--fg);", text: tip }),
+    ]));
+  }
+
+  // Empty state when there's nothing to show yet.
+  if (!feat.length && !trips.length) {
+    wrap.append(el("div", { class: "empty", style: "margin-top:24px;", html: `${icon(ICONS.drop, 52)}<h3>Welcome</h3><p>Star a water and log a trip — your dashboard fills in from there.</p>` }));
+  }
+}
+
+const isStillUnit = (r) => r.waterType === "still" ? "ft" : "cfs";
+
+// Local, data-driven suggestion that mirrors the AI card without an API call.
+function homeSuggestion(r) {
+  if (!r) return null;
+  const s = waterStats(r);
+  const cfs = r.lastCFS;
+  const name = r.name;
+  if (r.waterType !== "still" && cfs != null && s && s.goodAvgCfs != null) {
+    const m = conditionMatch(r);
+    const matchTxt = m ? ` — ${m.label.toLowerCase()}` : "";
+    const fly = s.topFly ? ` ${s.topFly} has been your top producer here.` : "";
+    return `${name} is holding at ${Math.round(cfs)} cfs${matchTxt} (your fish-catching days averaged ${Math.round(s.goodAvgCfs)} cfs).${fly}`;
+  }
+  if (s && s.n) {
+    const fly = s.topFly ? ` ${s.topFly} has been your top producer here.` : "";
+    return `You've fished ${name} ${s.n} time${s.n === 1 ? "" : "s"} for ${s.avgFish} fish/trip on average.${fly}`;
+  }
+  return `${name} is starred — log a trip here and tips will sharpen as your history builds.`;
+}
 
 // ---------- rivers tab ----------
 
@@ -1470,6 +1636,7 @@ function sectionLabel(text) {
 
 function renderRivers() {
   setHeader("Waters", "Rivers & stillwater · tap for live conditions", [
+    el("button", { class: "icon-btn", "aria-label": "Map", html: icon(ICONS.map, 18), onclick: () => switchTab("map") }),
     el("button", { class: "icon-btn", "aria-label": "Add water", html: icon(ICONS.plus, 18), onclick: () => addRiverModal() }),
   ]);
   const panel = $("#panel-rivers");
@@ -2322,7 +2489,7 @@ function addRiverModal(prefillName = "") {
 // ---------- trips tab ----------
 
 function renderTrips() {
-  setHeader("Trips", `${state.trips.length} logged`, [
+  setHeader("Log", `${state.trips.length} logged`, [
     el("button", {
       class: "icon-btn",
       "aria-label": "Gear",
@@ -3249,7 +3416,8 @@ function memoRow(m, tripId) {
 // ---------- flies tab ----------
 
 function renderFlies() {
-  setHeader("Flies", `${state.flies.length} patterns`, [
+  setHeader("Fly Box", `${state.flies.length} patterns`, [
+    el("button", { class: "icon-btn", "aria-label": "Leaders", html: icon(ICONS.scissors, 18), onclick: () => switchTab("leaders") }),
     el("button", {
       class: "icon-btn",
       "aria-label": "Add fly",
@@ -3547,7 +3715,7 @@ function statCard(label, value, sub) {
 }
 
 function renderReports() {
-  setHeader("Reports", "Your season at a glance", []);
+  setHeader("Insights", "Your season at a glance", []);
   const panel = $("#panel-reports");
   panel.innerHTML = "";
 
@@ -3735,7 +3903,9 @@ function renderReports() {
 }
 
 function renderLeaders() {
-  setHeader("Leaders", "Quick-start rigs", []);
+  setHeader("Leaders", "Quick-start rigs", [
+    el("button", { class: "icon-btn", "aria-label": "Back to Fly Box", html: `${icon(ICONS.leaf, 16)} <span>Fly Box</span>`, onclick: () => switchTab("flies") }),
+  ]);
   const panel = $("#panel-leaders");
   panel.innerHTML = "";
   for (const l of state.leaders) {
@@ -3776,7 +3946,9 @@ async function openLeader(id) {
 let mainMap = null;
 let mapLayer = null;
 function renderMap() {
-  setHeader("Map", "Rivers & trips", []);
+  setHeader("Map", "Rivers & trips", [
+    el("button", { class: "icon-btn", "aria-label": "Back to Waters", html: `${icon(ICONS.drop, 16)} <span>Waters</span>`, onclick: () => switchTab("rivers") }),
+  ]);
   const panel = $("#panel-map");
   panel.innerHTML = "";
   panel.append(el("div", { id: "map" }));
@@ -4320,7 +4492,8 @@ async function fullSync() {
 }
 
 function rerenderCurrent() {
-  if (state.tab === "rivers") renderRivers();
+  if (state.tab === "home") renderHome();
+  else if (state.tab === "rivers") renderRivers();
   else if (state.tab === "trips") renderTrips();
   else if (state.tab === "flies") renderFlies();
   else if (state.tab === "leaders") renderLeaders();
@@ -4576,7 +4749,8 @@ async function initAuth() {
     state.db = await openDB();
     await seedIfNeeded(state.db);
     await reload();
-    renderRivers();
+    state.tab = "home";
+    renderHome();
 
     // Restore session that survived a page reload
     const saved = loadSessionState();
