@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.10-2";
+const APP_VERSION = "2026.06.22-1";
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -684,6 +684,21 @@ function classifyFlow(r) {
   return { label: "Very high", color: "#2b5fb0", pct: p };
 }
 
+// Water-temperature read + trout-safety verdict. Rivers/streams get the
+// coldwater scale (trout are lethally stressed above ~68°F); stillwater shows
+// the number with no warning, since lakes are usually warmwater fisheries.
+// Returns null when no reading is cached.
+function tempStatus(r) {
+  const f = r.lastWaterTempF;
+  if (f == null || !isFinite(f)) return null;
+  const temp = `${Math.round(f)}°F`;
+  if (r.waterType === "still") return { temp, label: "", color: "var(--muted)", warn: false, danger: false };
+  if (f >= 68) return { temp, label: "Too warm — rest the fish", short: "Too warm", color: "#d9534f", warn: true, danger: true };
+  if (f >= 65) return { temp, label: "Warming — fish early",      short: "Warming",  color: "#e0922f", warn: true, danger: false };
+  if (f >= 40) return { temp, label: "Good temp",                 short: "Good",     color: "#3aa76d", warn: false, danger: false };
+  return        { temp, label: "Cold — slow fishing",             short: "Cold",     color: "#5a8fb5", warn: false, danger: false };
+}
+
 // Fetch + cache today's flow percentile on a river (skips stillwater, DWR, and
 // rivers with a manual ideal range, which don't need it).
 async function applyFlowPercentile(r, flowCFS) {
@@ -696,21 +711,39 @@ async function applyFlowPercentile(r, flowCFS) {
 }
 
 async function fetchDWR(abbrev) {
-  // Colorado DWR telemetry station — returns current reading + stage
-  // The station endpoint includes the most-recent measValue inline, so one call is enough.
-  const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrystation/?format=json&abbrev=${encodeURIComponent(abbrev)}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`DWR ${r.status}`);
-  const data = await r.json();
-  const s = data.ResultList?.[0];
+  // Colorado DWR telemetry station — returns current reading + stage.
+  // Water temp lives on a separate WATTEMP time series (already in °F), so we
+  // fetch today's series in parallel and take the latest point.
+  const stationUrl = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrystation/?format=json&abbrev=${encodeURIComponent(abbrev)}`;
+  const [stationRes, tempF] = await Promise.all([
+    fetch(stationUrl),
+    fetchDWRWaterTemp(abbrev).catch(() => null),
+  ]);
+  if (!stationRes.ok) throw new Error(`DWR ${stationRes.status}`);
+  const s = (await stationRes.json()).ResultList?.[0];
   if (!s) throw new Error("DWR station not found");
   const flow = s.measValue != null ? parseFloat(s.measValue) : null;
   return {
     flowCFS:       (isFinite(flow) && flow >= 0) ? flow : null,
-    waterTempF:    null,                                          // available via TMPRT param — future
+    waterTempF:    tempF,
     gaugeHeightFt: s.stage != null ? parseFloat(s.stage) : null,
     observedAt:    s.measDateTime ?? null,
   };
+}
+
+// Latest DWR water temperature (°F) for a station today, or null.
+async function fetchDWRWaterTemp(abbrev) {
+  const d = new Date();
+  const today = `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}/${d.getFullYear()}`;
+  const url = `https://dwr.state.co.us/Rest/GET/api/v2/telemetrystations/telemetrytimeseriesraw/?format=json&abbrev=${encodeURIComponent(abbrev)}&parameter=WATTEMP&startDate=${encodeURIComponent(today)}&dateFormat=spaceSepToSeconds`;
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const list = (await r.json()).ResultList ?? [];
+  for (let i = list.length - 1; i >= 0; i--) {            // newest is last
+    const v = list[i].measValue != null && list[i].measValue !== "" ? parseFloat(list[i].measValue) : null;
+    if (v != null && isFinite(v)) return v;
+  }
+  return null;
 }
 
 function titleCase(str) {
@@ -1325,6 +1358,12 @@ function buildHeroCard(r) {
   // Bottom group: live-conditions line + personal context (kept as one flex
   // child so the card's space-between layout stays tight).
   const bottomGroup = el("div", {}, [bottomEl]);
+  const ts = tempStatus(r);
+  if (ts && ts.warn) {
+    bottomGroup.append(el("div", { style: "margin-top:5px;" }, [
+      el("span", { style: `display:inline-block; font-size:11px; font-weight:700; color:#fff; background:${ts.color}; padding:2px 9px; border-radius:999px;`, text: `${ts.temp} · ${ts.short}` }),
+    ]));
+  }
   const stats = waterStats(r);
   if (stats) {
     bottomGroup.append(el("div", { style: "margin-top:6px; font-size:11px; color:rgba(255,255,255,0.9);", text: personalLine(stats) }));
@@ -1566,12 +1605,17 @@ function riverRow(r, distanceMi = null) {
   if (trend === "rising")  subBits.push(el("span", { class: "trend-rising",  text: " ↑ rising" }));
   if (trend === "falling") subBits.push(el("span", { class: "trend-falling", text: " ↓ falling" }));
 
-  // At-a-glance condition line: flow level + freshness dot + water temp.
+  // At-a-glance condition line: flow level + freshness dot + water temp (color
+  // coded for trout safety on rivers; plain on stillwater).
   const condEls = [];
   const fc = classifyFlow(r);
   if (fc) condEls.push(el("span", { style: `color:${fc.color}; font-weight:700;`, text: fc.label }));
   if (hasReading) condEls.push(freshnessDot(r));
-  if (r.lastWaterTempF != null) condEls.push(el("span", { text: `${Math.round(r.lastWaterTempF)}°F water` }));
+  const ts = tempStatus(r);
+  if (ts) condEls.push(el("span", {
+    style: ts.warn ? `color:${ts.color}; font-weight:700;` : "",
+    text: ts.warn ? `${ts.temp} ${ts.short}` : `${ts.temp} water`,
+  }));
   const condLine = condEls.length
     ? el("div", { style: "display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; margin-top:3px;" }, condEls)
     : null;
@@ -1997,6 +2041,18 @@ async function refreshRiverConditions(r, container) {
 
   container.innerHTML = "";
   container.append(buildConditionsGrid(usgs, weather, r.source, r.waterType));
+  // Trout-safety verdict from the fresh reading (rivers only).
+  const vts = tempStatus({ waterType: r.waterType, lastWaterTempF: usgs?.waterTempF });
+  if (vts && (vts.warn || vts.label)) {
+    container.append(el("div", {
+      style: `margin-top:10px; padding:9px 12px; border-radius:10px; font-size:13px; font-weight:600; ` +
+             (vts.warn ? `background:${vts.color}; color:#fff;` : `background:var(--bg-3); color:var(--fg);`),
+      text: `${vts.temp} water · ${vts.label}`,
+    }));
+    if (vts.danger) {
+      container.append(el("div", { style: "margin-top:6px; font-size:12px; color:var(--muted);", text: "Trout fight hard and recover poorly in warm water. Consider fishing at dawn, moving to higher/cooler water, or targeting warmwater species." }));
+    }
+  }
   if (errs.length) {
     container.append(el("div", { style: "color:var(--red); font-size:12px; margin-top:8px;", text: errs.join(" · ") }));
   }
@@ -2629,15 +2685,53 @@ async function newTripModal(prefRiver, editTrip = null) {
 
   const body = el("div");
 
-  // Form
-  const riverSel = el("select", {
-    onchange: (e) => { formState.riverId = Number(e.target.value); }
+  // River picker — type-to-filter instead of a long dropdown.
+  const riverDisplay = (r) => r.section ? `${r.name} — ${r.section}` : r.name;
+  const riverInput = el("input", {
+    type: "search", autocomplete: "off",
+    placeholder: "Search rivers, lakes, states…",
+    value: (() => { const r = state.rivers.find(x => x.id === formState.riverId); return r ? riverDisplay(r) : ""; })(),
   });
-  for (const r of state.rivers) {
-    const o = el("option", { value: r.id, text: r.section ? `${r.name} — ${r.section}` : r.name });
-    if (r.id === formState.riverId) o.selected = true;
-    riverSel.append(o);
-  }
+  const riverList = el("div", { style: "display:none; position:absolute; left:0; right:0; top:100%; z-index:20; margin-top:4px; max-height:240px; overflow-y:auto; background:var(--card); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow);" });
+  const renderRiverOptions = (q) => {
+    riverList.innerHTML = "";
+    const qq = q.trim().toLowerCase();
+    const matches = state.rivers
+      .filter(r => !qq || `${r.name} ${r.section || ""} ${r.state || ""}`.toLowerCase().includes(qq))
+      .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || a.name.localeCompare(b.name))
+      .slice(0, 40);
+    if (!matches.length) {
+      riverList.append(el("div", { style: "padding:10px 12px; color:var(--muted); font-size:13px;", text: "No matching water" }));
+    }
+    matches.forEach((r, i) => {
+      const sel = r.id === formState.riverId;
+      const row = el("button", {
+        type: "button",
+        style: `display:block; width:100%; text-align:left; padding:9px 12px; background:${sel ? "var(--bg-2)" : "transparent"}; border:0;${i ? " border-top:1px solid var(--line);" : ""}`,
+      }, [
+        el("div", { style: "font-weight:600; font-size:14px;", text: `${r.favorite ? "★ " : ""}${r.name}` }),
+        (r.section || r.state) ? el("div", { style: "font-size:11px; color:var(--muted); margin-top:1px;", text: [r.state, r.section].filter(Boolean).join(" · ") }) : null,
+      ]);
+      // mousedown fires before the input's blur, so the pick registers.
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        formState.riverId = r.id;
+        riverInput.value = riverDisplay(r);
+        riverList.style.display = "none";
+      });
+      riverList.append(row);
+    });
+  };
+  riverInput.addEventListener("focus", () => { renderRiverOptions(""); riverList.style.display = "block"; });
+  riverInput.addEventListener("input", () => { renderRiverOptions(riverInput.value); riverList.style.display = "block"; });
+  riverInput.addEventListener("blur", () => {
+    setTimeout(() => {
+      riverList.style.display = "none";
+      const cur = state.rivers.find(x => x.id === formState.riverId);
+      riverInput.value = cur ? riverDisplay(cur) : "";   // restore selection text if they typed but didn't pick
+    }, 150);
+  });
+  const riverField = el("div", { style: "position:relative;" }, [riverInput, riverList]);
 
   // Snapshot button label changes when the trip date is in the past (it then
   // back-fills that day's historical conditions instead of live ones).
@@ -2658,7 +2752,7 @@ async function newTripModal(prefRiver, editTrip = null) {
       el("label", { text: "When" }),
       el("input", { type: "datetime-local", value: formState.date, oninput: (e) => { formState.date = e.target.value; refreshSnapLabel(); } }),
     ]),
-    el("div", { class: "form-group" }, [el("label", { text: "River" }), riverSel]),
+    el("div", { class: "form-group" }, [el("label", { text: "River / water" }), riverField]),
     el("div", { class: "form-group" }, [
       el("label", { text: "Spot / access (optional)" }),
       el("input", { type: "text", value: formState.locationLabel, placeholder: "e.g. Below Cheesman Dam", oninput: (e) => formState.locationLabel = e.target.value }),
