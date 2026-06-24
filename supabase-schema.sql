@@ -4,7 +4,7 @@
 
 -- ───────────────────────── RIVERS ─────────────────────────
 create table if not exists rivers (
-  id                text primary key,
+  id                text,
   user_id           uuid not null references auth.users(id) on delete cascade,
   name              text,
   state             text,
@@ -26,7 +26,8 @@ create table if not exists rivers (
   ideal_flow_max    double precision,
   notes             text,
   updated_at        timestamptz default now(),
-  deleted           boolean default false
+  deleted           boolean default false,
+  primary key (user_id, id)
 );
 
 -- If the rivers table already exists from an earlier run, add the new columns:
@@ -38,7 +39,7 @@ alter table rivers add column if not exists ideal_flow_max    double precision;
 
 -- ───────────────────────── TRIPS ──────────────────────────
 create table if not exists trips (
-  id              text primary key,
+  id              text,
   user_id         uuid not null references auth.users(id) on delete cascade,
   date            bigint,
   river_id        text,
@@ -69,7 +70,8 @@ create table if not exists trips (
   fly_uids        text,
   photos          text,
   updated_at      timestamptz default now(),
-  deleted         boolean default false
+  deleted         boolean default false,
+  primary key (user_id, id)
 );
 
 -- If the trips table already exists from an earlier run, add the new columns:
@@ -81,7 +83,7 @@ alter table trips add column if not exists photos       text;
 
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
-  id             text primary key,
+  id             text,
   user_id        uuid not null references auth.users(id) on delete cascade,
   name           text,
   type           text,
@@ -94,7 +96,8 @@ create table if not exists flies (
   retired        boolean default false,
   image_data_url text,
   updated_at     timestamptz default now(),
-  deleted        boolean default false
+  deleted        boolean default false,
+  primary key (user_id, id)
 );
 
 -- If the flies table already exists from an earlier run, add the new columns:
@@ -103,7 +106,7 @@ alter table flies add column if not exists retired       boolean default false;
 
 -- ──────────────────────── LEADERS ─────────────────────────
 create table if not exists leaders (
-  id         text primary key,
+  id         text,
   user_id    uuid not null references auth.users(id) on delete cascade,
   name       text,
   situation  text,
@@ -114,7 +117,8 @@ create table if not exists leaders (
   diagram    text,
   tips       text,
   updated_at timestamptz default now(),
-  deleted    boolean default false
+  deleted    boolean default false,
+  primary key (user_id, id)
 );
 
 -- ─────────────────────── USER PREFS ───────────────────────
@@ -130,7 +134,7 @@ create policy "own prefs" on user_prefs for all using (auth.uid() = user_id) wit
 
 -- ───────────────────────── GEAR ───────────────────────────
 create table if not exists gear (
-  id         text primary key,
+  id         text,
   user_id    uuid not null references auth.users(id) on delete cascade,
   name       text,
   type       text,
@@ -141,13 +145,47 @@ create table if not exists gear (
   notes      text,
   retired    boolean default false,
   updated_at timestamptz default now(),
-  deleted    boolean default false
+  deleted    boolean default false,
+  primary key (user_id, id)
 );
 
 -- If the gear table already exists from an earlier run, add the new columns:
 alter table gear add column if not exists model  text;
 alter table gear add column if not exists weight text;
 alter table gear add column if not exists length text;
+
+-- Migrate older installations from a global id primary key to a tenant-scoped
+-- key. Deterministic seed ids can then safely exist for more than one user.
+do $$
+declare
+  table_name text;
+  pk_name text;
+  pk_definition text;
+begin
+  foreach table_name in array array['rivers', 'trips', 'flies', 'leaders', 'gear']
+  loop
+    pk_name := null;
+    pk_definition := null;
+    select conname, pg_get_constraintdef(oid)
+      into pk_name, pk_definition
+      from pg_constraint
+     where conrelid = table_name::regclass and contype = 'p';
+
+    if pk_definition = 'PRIMARY KEY (id)' then
+      execute format('alter table %I drop constraint %I', table_name, pk_name);
+      pk_name := null;
+      pk_definition := null;
+    end if;
+
+    if pk_definition is null then
+      execute format(
+        'alter table %I add constraint %I primary key (user_id, id)',
+        table_name,
+        table_name || '_pkey'
+      );
+    end if;
+  end loop;
+end $$;
 
 -- ───────────── Row Level Security: you only ever see your own data ─────────────
 alter table rivers  enable row level security;

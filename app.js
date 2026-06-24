@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.22-2";
+const APP_VERSION = "2026.06.22-3";
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -332,12 +332,16 @@ function seedLeaderUid(l) { return `seed-l-${slug(l.name)}`; }
 // ---------- IndexedDB ----------
 
 const DB_NAME = "flyfish-db";
-const DB_VERSION = 2; // v2 adds the "gear" store
-const STORES = ["rivers", "trips", "memos", "flies", "leaders", "gear", "meta"];
+const DB_VERSION = 3; // v3 adds a durable cloud-sync outbox
+const STORES = ["rivers", "trips", "memos", "flies", "leaders", "gear", "meta", "outbox"];
 
-function openDB() {
+function localDbName(userId) {
+  return userId ? `${DB_NAME}-user-${userId}` : `${DB_NAME}-anonymous`;
+}
+
+function openDB(name = DB_NAME) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(name, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       for (const s of STORES) {
@@ -349,6 +353,52 @@ function openDB() {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+// Import the old shared database once. Whichever profile is active on the
+// first upgraded launch receives the existing records; later profiles remain
+// isolated from it.
+async function importLegacyDbOnce(targetDb) {
+  const claimKey = "flyfish_legacy_db_claimed_v1";
+  if (localStorage.getItem(claimKey)) return;
+  const legacy = await openDB(DB_NAME);
+  try {
+    for (const store of STORES.filter(s => s !== "outbox")) {
+      for (const rec of await dbGetAll(legacy, store)) {
+        const value = SYNCED_STORES.includes(store) ? { ...rec, _fromSync: true } : rec;
+        await dbPut(targetDb, store, value);
+      }
+    }
+    localStorage.setItem(claimKey, localDbName(currentUser?.id));
+  } finally {
+    legacy.close();
+  }
+}
+
+// A first-time sign-in adopts data created while signed out, but only when the
+// account database is still empty. Preserving local integer ids is then safe,
+// including memo-to-trip links.
+async function importAnonymousDbIntoEmptyAccount(targetDb, userId) {
+  if (!userId) return;
+  const claimKey = `flyfish_anonymous_db_claimed:${userId}`;
+  if (localStorage.getItem(claimKey)) return;
+  const hasAccountData = (await Promise.all(
+    ["rivers", "trips", "memos", "flies", "leaders", "gear"].map(s => dbGetAll(targetDb, s))
+  )).some(rows => rows.length > 0);
+  if (hasAccountData) return;
+
+  const anonymous = await openDB(localDbName(null));
+  try {
+    for (const store of STORES.filter(s => s !== "outbox")) {
+      for (const rec of await dbGetAll(anonymous, store)) {
+        const value = SYNCED_STORES.includes(store) ? { ...rec, _fromSync: true } : rec;
+        await dbPut(targetDb, store, value);
+      }
+    }
+    localStorage.setItem(claimKey, "true");
+  } finally {
+    anonymous.close();
+  }
 }
 
 function tx(db, store, mode = "readonly") {
@@ -4004,14 +4054,23 @@ function sessionElapsed(startedAt) {
 }
 
 function saveSessionState() {
-  if (!state.session) { localStorage.removeItem("flyfish_session"); return; }
+  const key = `flyfish_session:${currentUser?.id || "anonymous"}`;
+  if (!state.session) { localStorage.removeItem(key); return; }
   const { startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather } = state.session;
-  localStorage.setItem("flyfish_session", JSON.stringify({ startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather }));
+  localStorage.setItem(key, JSON.stringify({ startedAt, riverId, riverName, fishCount, lat, lon, usgs, weather }));
 }
 
 function loadSessionState() {
   try {
-    const raw = localStorage.getItem("flyfish_session");
+    const key = `flyfish_session:${currentUser?.id || "anonymous"}`;
+    let raw = localStorage.getItem(key);
+    if (!raw) {
+      raw = localStorage.getItem("flyfish_session");
+      if (raw) {
+        localStorage.setItem(key, raw);
+        localStorage.removeItem("flyfish_session");
+      }
+    }
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
@@ -4373,28 +4432,42 @@ function fromRemote(store, row) {
 
 // ---- single-row push (debounced) — fired by dbPut on every local edit ----
 
-const pendingPush = new Map(); // uid -> { store, rec }
+const pendingPush = new Map(); // store:uid -> { store, rec }
 let pushTimer = null;
 
 function pushRecord(store, rec) {
   if (!currentUser || !supaClient || !SYNCED_STORES.includes(store) || !rec.uid) return;
-  pendingPush.set(rec.uid, { store, rec: { ...rec } });
+  const key = `${store}:${rec.uid}`;
+  pendingPush.set(key, { store, rec: { ...rec } });
+  if (state.db) dbPut(state.db, "outbox", { id: key, store, rec: { ...rec } }).catch(console.warn);
   clearTimeout(pushTimer);
   pushTimer = setTimeout(flushPush, 700);
 }
 
 async function flushPush() {
-  if (!currentUser || !supaClient || !pendingPush.size) return;
-  const items = [...pendingPush.values()];
-  pendingPush.clear();
+  if (!currentUser || !supaClient || !state.db) return;
+  const durable = await dbGetAll(state.db, "outbox");
+  for (const item of durable) pendingPush.set(item.id, { store: item.store, rec: item.rec });
+  if (!pendingPush.size) return;
+  const items = [...pendingPush.entries()];
   const byStore = {};
-  for (const { store, rec } of items) (byStore[store] ||= []).push(toRemote(store, rec, currentUser.id));
+  for (const [key, { store, rec }] of items) {
+    (byStore[store] ||= []).push({ key, row: toRemote(store, rec, currentUser.id) });
+  }
   setSyncStatus("syncing");
   let ok = true;
-  for (const [store, rows] of Object.entries(byStore)) {
+  for (const [store, entries] of Object.entries(byStore)) {
     try {
-      const { error } = await supaClient.from(store).upsert(rows);
-      if (error) { ok = false; console.warn("push failed", store, error); }
+      const { error } = await supaClient.from(store).upsert(entries.map(x => x.row), { onConflict: "user_id,id" });
+      if (error) {
+        ok = false;
+        console.warn("push failed", store, error);
+      } else {
+        for (const { key } of entries) {
+          pendingPush.delete(key);
+          await dbDelete(state.db, "outbox", key);
+        }
+      }
     } catch (e) { ok = false; console.warn("push error", store, e); }
   }
   if (ok) { lastSyncedAt = Date.now(); localStorage.setItem("flyfish_last_sync", String(lastSyncedAt)); }
@@ -4442,7 +4515,7 @@ async function syncStore(store) {
     if (!row || (loc.updatedAt || 0) > remoteTs) toPush.push(toRemote(store, loc, userId));
   }
   if (toPush.length) {
-    const { error: upErr } = await supaClient.from(store).upsert(toPush);
+    const { error: upErr } = await supaClient.from(store).upsert(toPush, { onConflict: "user_id,id" });
     if (upErr) throw upErr;
   }
 }
@@ -4461,7 +4534,7 @@ async function relinkTripRivers() {
 
 let syncing = false;
 async function fullSync() {
-  if (!currentUser || !supaClient || syncing) return;
+  if (!currentUser || !supaClient || syncing) return false;
   syncing = true;
   setSyncStatus("syncing");
   let ok = true;
@@ -4488,7 +4561,9 @@ async function fullSync() {
     toast("Sync failed — your data is safe on this device");
   }
   syncing = false;
+  flushPush();
   loadRemoteTheme(); // adopt a theme picked on another device (fire-and-forget)
+  return ok;
 }
 
 function rerenderCurrent() {
@@ -4613,7 +4688,13 @@ function openAccountSheet() {
     body.append(el("button", {
       class: "btn", style: "margin-top:8px;",
       html: `${icon(ICONS.refresh, 18)} <span>Sync now</span>`,
-      onclick: async (e) => { e.preventDefault(); await fullSync(); toast("Synced"); closeModal(); openAccountSheet(); },
+      onclick: async (e) => {
+        e.preventDefault();
+        const ok = await fullSync();
+        toast(ok ? "Synced" : "Sync failed");
+        closeModal();
+        openAccountSheet();
+      },
     }));
     body.append(el("button", {
       class: "btn secondary", style: "margin-top:8px;", text: "Sign out",
@@ -4706,6 +4787,24 @@ function openAccountSheet() {
   openModal(modalShell("Account", body));
 }
 
+let appReady = false;
+
+async function switchLocalDatabase(userId) {
+  clearTimeout(pushTimer);
+  pendingPush.clear();
+  if (state.db) state.db.close();
+  state.db = await openDB(localDbName(userId));
+  await importLegacyDbOnce(state.db);
+  await importAnonymousDbIntoEmptyAccount(state.db, userId);
+  await seedIfNeeded(state.db);
+  await reload();
+  state.session = loadSessionState();
+  if (appReady) {
+    rerenderCurrent();
+    renderSessionUI();
+  }
+}
+
 async function initAuth() {
   const btn = $("#account-btn");
   if (btn) btn.addEventListener("click", () => openAccountSheet());
@@ -4721,20 +4820,20 @@ async function initAuth() {
   } catch (e) { console.warn("getSession failed", e); }
   updateAccountButton();
 
-  supaClient.auth.onAuthStateChange((event, session) => {
+  supaClient.auth.onAuthStateChange(async (event, session) => {
     const wasUser = currentUser?.id;
     currentUser = session?.user ?? null;
     updateAccountButton();
     if (event === "SIGNED_IN" && currentUser && currentUser.id !== wasUser) {
       toast("Signed in — syncing");
+      if (appReady) await switchLocalDatabase(currentUser.id);
       fullSync();
     } else if (event === "SIGNED_OUT") {
       toast("Signed out");
       setSyncStatus("idle");
+      if (appReady) await switchLocalDatabase(null);
     }
   });
-
-  if (currentUser) fullSync();
 
   // Re-sync when the app comes back to the foreground.
   document.addEventListener("visibilitychange", () => {
@@ -4746,11 +4845,11 @@ async function initAuth() {
 
 (async function init() {
   try {
-    state.db = await openDB();
-    await seedIfNeeded(state.db);
-    await reload();
+    await initAuth();
+    await switchLocalDatabase(currentUser?.id ?? null);
     state.tab = "home";
     renderHome();
+    appReady = true;
 
     // Restore session that survived a page reload
     const saved = loadSessionState();
@@ -4762,7 +4861,7 @@ async function initAuth() {
     $("#session-fab").addEventListener("click", () => startSessionSheet());
 
     // Cloud accounts + sync — additive layer; the app works fully offline without it.
-    initAuth();
+    if (currentUser) fullSync();
   } catch (err) {
     console.error(err);
     document.body.innerHTML = `<div style="padding:20px;color:#d8525a">Failed to load: ${err.message}</div>`;
