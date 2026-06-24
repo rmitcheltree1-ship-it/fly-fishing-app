@@ -1,0 +1,20 @@
+# Repository Overview
+
+Purpose:
+Personal fly fishing intelligence platform.
+
+Current Status:
+MVP complete.
+
+Current Focus:
+Catch-level tracking.
+
+Primary Technologies:
+- Vanilla JS
+- IndexedDB
+- Supabase
+- Leaflet
+- Anthropic API
+
+Next Feature:
+Catch-level tracking.
