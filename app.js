@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.22-3";
+const APP_VERSION = "2026.06.24-1";
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -802,11 +802,16 @@ function titleCase(str) {
 
 // Full state name (as geocoders return it) → postal abbreviation.
 const STATE_ABBR = { "Alabama":"AL","Alaska":"AK","Arizona":"AZ","Arkansas":"AR","California":"CA","Colorado":"CO","Connecticut":"CT","Delaware":"DE","Florida":"FL","Georgia":"GA","Hawaii":"HI","Idaho":"ID","Illinois":"IL","Indiana":"IN","Iowa":"IA","Kansas":"KS","Kentucky":"KY","Louisiana":"LA","Maine":"ME","Maryland":"MD","Massachusetts":"MA","Michigan":"MI","Minnesota":"MN","Mississippi":"MS","Missouri":"MO","Montana":"MT","Nebraska":"NE","Nevada":"NV","New Hampshire":"NH","New Jersey":"NJ","New Mexico":"NM","New York":"NY","North Carolina":"NC","North Dakota":"ND","Ohio":"OH","Oklahoma":"OK","Oregon":"OR","Pennsylvania":"PA","Rhode Island":"RI","South Carolina":"SC","South Dakota":"SD","Tennessee":"TN","Texas":"TX","Utah":"UT","Vermont":"VT","Virginia":"VA","Washington":"WA","West Virginia":"WV","Wisconsin":"WI","Wyoming":"WY" };
+const STATE_NAME = Object.fromEntries(Object.entries(STATE_ABBR).map(([name, abbr]) => [abbr, name]));
 
 // Place search via Photon (OpenStreetMap) — free, CORS-enabled, fuzzy. Finds
 // named lakes/reservoirs/parks that have no USGS gauge. Water features sort first.
-async function searchPlaces(query) {
-  const qs = new URLSearchParams({ q: query, limit: "10" });
+async function searchPlaces(query, stateCd = "") {
+  const stateName = STATE_NAME[stateCd] || stateCd || "";
+  const placeQuery = stateName && !query.toLowerCase().includes(stateName.toLowerCase()) && !query.toUpperCase().includes(stateCd)
+    ? `${query} ${stateName}`
+    : query;
+  const qs = new URLSearchParams({ q: placeQuery, limit: "12" });
   if (state.userLoc) { qs.set("lat", state.userLoc.lat); qs.set("lon", state.userLoc.lon); }
   const r = await fetch(`https://photon.komoot.io/api/?${qs}`);
   if (!r.ok) throw new Error(`Photon ${r.status}`);
@@ -2317,6 +2322,9 @@ function addRiverModal(prefillName = "") {
     s.lon = String(result.lon); lonInput.value = result.lon;
     s.source = result.source || "usgs";
     if (result.stateAbbr) { s.st = result.stateAbbr; stateSelect.value = result.stateAbbr; }
+    selectedHint.textContent = s.siteCode
+      ? `Live ${s.source === "dwr" ? "DWR" : "USGS"} station selected (${s.siteCode}).`
+      : "Weather-only place selected. No gauge needed.";
     nameInput.focus();
   };
 
@@ -2333,6 +2341,30 @@ function addRiverModal(prefillName = "") {
   const searchQuery = el("input", { type: "search", placeholder: "e.g. Arkansas River",
     value: prefillName, style: "flex:1; min-width:0;" });
   const resultsEl = el("div");
+  const selectedHint = el("div", {
+    style: "color:var(--muted); font-size:12px; line-height:1.45; margin-top:8px;",
+    text: "Pick a live gauge when one exists, or choose a place / drop a pin for weather-only water.",
+  });
+  const useTypedBtn = el("button", {
+    class: "btn secondary",
+    style: "margin-top:8px; display:none;",
+    html: `${icon(ICONS.map, 16)} <span>Use typed name — weather only</span>`,
+    onclick: (e) => {
+      e.preventDefault();
+      const q = searchQuery.value.trim();
+      if (!q) { toast("Type a water name first"); return; }
+      s.name = q; nameInput.value = q;
+      s.siteCode = ""; codeInput.value = "";
+      s.source = "manual";
+      selectedHint.textContent = "Weather-only water selected. Add coordinates by choosing a place result or dropping a pin.";
+      toast("Name filled — set a location next");
+      nameInput.focus();
+    },
+  });
+  if (prefillName) useTypedBtn.style.display = "";
+  searchQuery.addEventListener("input", () => {
+    useTypedBtn.style.display = searchQuery.value.trim() ? "" : "none";
+  });
 
   const searchBtn = el("button", {
     class: "btn secondary",
@@ -2341,7 +2373,7 @@ function addRiverModal(prefillName = "") {
     onclick: async (e) => {
       e.preventDefault();
       const q = searchQuery.value.trim();
-      if (!q) { toast("Enter a river name"); return; }
+      if (!q) { toast("Enter a water name"); return; }
       s.st = stateSelect.value;
       searchBtn.disabled = true;
       searchBtn.innerHTML = `${icon(ICONS.refresh, 16)} <span>Searching…</span>`;
@@ -2355,7 +2387,7 @@ function addRiverModal(prefillName = "") {
         const tasks = [
           gauged ? searchUSGSSites(s.st, q, siteType).catch(() => []) : Promise.resolve([]),
           (gauged && s.st === "CO" && s.kind !== "lake") ? searchDWRStations(q).catch(() => []) : Promise.resolve([]),
-          searchPlaces(q).catch(() => []),
+          searchPlaces(q, s.st).catch(() => []),
         ];
         const [usgsResults, dwrResults, placeResults] = await Promise.all(tasks);
         // DWR first for CO — they're the authoritative source for CO rivers
@@ -2366,6 +2398,7 @@ function addRiverModal(prefillName = "") {
         if (!gauges.length && !placeResults.length) {
           resultsEl.append(el("div", { style: "padding:10px 12px; color:var(--muted); font-size:13px;",
             text: "Nothing found — try a shorter name, or use \"Drop a pin on the map\" below to place it yourself." }));
+          useTypedBtn.style.display = "";
         } else {
           const box = el("div", { class: "gauge-results" });
           const resultRow = (res, badge, badgeClass, meta, toastMsg) => {
@@ -2381,6 +2414,9 @@ function addRiverModal(prefillName = "") {
             );
             return row;
           };
+          if (gauges.length) {
+            box.append(el("div", { style: "color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.04em; font-weight:600; margin:2px 2px 4px;", text: s.kind === "lake" ? "Live lake / reservoir stations" : "Live flow gauges" }));
+          }
           for (const res of gauges.slice(0, 12)) {
             const isDWR = res.source === "dwr";
             box.append(resultRow(res, isDWR ? "DWR" : "USGS", isDWR ? "dwr" : "usgs",
@@ -2396,6 +2432,7 @@ function addRiverModal(prefillName = "") {
             }
           }
           resultsEl.append(box);
+          useTypedBtn.style.display = "";
         }
       } catch (err) {
         toast("Search failed — " + err.message);
@@ -2412,9 +2449,12 @@ function addRiverModal(prefillName = "") {
     el("div", { style: "display:flex; gap:8px; align-items:center;" }, [stateSelect, searchQuery]),
     el("div", { style: "margin-top:8px;" }, [searchBtn]),
     resultsEl,
+    useTypedBtn,
+    selectedHint,
     el("div", { style: "color:var(--muted); font-size:11px; margin-top:8px;", text: "Results include live gauges and map places. No luck? Drop a pin on the map below instead." }),
   ]);
-  const codeGroup = el("div", { class: "form-group" }, [el("label", { text: "Gauge / site code" }), codeInput]);
+  const codeLabel = el("label", { text: "Gauge / station code (optional)" });
+  const codeGroup = el("div", { class: "form-group" }, [codeLabel, codeInput]);
   // Kinds: rivers + streams are flowing (ST gauges, CFS); lakes use LK gauges;
   // ponds and coastal water have no USGS gauge — weather only.
   const KINDS = [
@@ -2430,6 +2470,16 @@ function addRiverModal(prefillName = "") {
       s.kind = e.target.value;
       const gauged = kindHasGaugeSearch(s.kind);
       codeGroup.style.display = gauged ? "" : "none";
+      if (!gauged) { s.siteCode = ""; codeInput.value = ""; s.source = "manual"; }
+      searchQuery.placeholder = s.kind === "lake" ? "e.g. South Slope Reservoir"
+        : s.kind === "pond" ? "e.g. neighborhood pond"
+        : s.kind === "coastal" ? "e.g. Charleston Harbor"
+        : "e.g. Arkansas River";
+      codeLabel.textContent = s.kind === "lake" ? "Lake station code (optional)" : "Gauge / station code (optional)";
+      selectedHint.textContent = gauged
+        ? "Live station data is best when available. Map places are still valid and save as weather-only."
+        : "This water type usually has no gauge. Search for the place or drop a pin for weather-only logging.";
+      useTypedBtn.style.display = searchQuery.value.trim() ? "" : "none";
       const title = $("#gauge-search-title");
       if (title) title.textContent = gauged
         ? (s.kind === "lake" ? "Find lake / reservoir by name" : "Find river / stream by name")
@@ -2506,7 +2556,9 @@ function addRiverModal(prefillName = "") {
         // A gauge is optional for every kind — plenty of small streams and
         // ponds have none. Without one we need coordinates so weather works.
         const code = kindHasGaugeSearch(s.kind) ? s.siteCode.trim() : "";
-        if (!code && (!parseFloat(s.lat) || !parseFloat(s.lon))) {
+        const lat = parseFloat(s.lat), lon = parseFloat(s.lon);
+        const hasCoords = Number.isFinite(lat) && Number.isFinite(lon);
+        if (!hasCoords) {
           toast("Set a location first — search for the place above, or drop a pin on the map");
           return;
         }
@@ -2516,10 +2568,10 @@ function addRiverModal(prefillName = "") {
           state: s.st.trim().toUpperCase() || "—",
           section: s.section.trim(),
           siteCode: code,
-          source: s.source || "usgs",
+          source: code ? (s.source || "usgs") : "manual",
           waterType: isFlowing ? "river" : "still",
-          lat: parseFloat(s.lat) || 0,
-          lon: parseFloat(s.lon) || 0,
+          lat,
+          lon,
           favorite: false, custom: true,
           lastCFS: null, prevCFS: null, lastElevationFt: null,
           lastWaterTempF: null, lastReadingAt: null,
