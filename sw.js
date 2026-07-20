@@ -1,6 +1,6 @@
 // Simple offline cache: app shell + most-recently-fetched API responses.
 // Bump VERSION on every release, in lockstep with APP_VERSION in app.js.
-const VERSION = "2026.06.24-1";
+const VERSION = "2026.07.20-1";
 const CACHE = "flyfish-" + VERSION;
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.json", "./icon.svg"];
 

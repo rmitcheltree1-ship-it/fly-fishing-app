@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.06.24-1";
+const APP_VERSION = "2026.07.20-1";
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -1525,6 +1525,61 @@ function conditionMatch(r) {
   return { label: "Lower than usual", color: "#c98a3a" };
 }
 
+function waterPrimaryValue(r) {
+  const isStill = r.waterType === "still";
+  if (isStill && r.lastElevationFt != null) return `${Math.round(r.lastElevationFt).toLocaleString()} ft`;
+  if (!isStill && r.lastCFS != null) return `${Math.round(r.lastCFS).toLocaleString()} cfs`;
+  return r.siteCode ? "Awaiting live data" : "Weather only";
+}
+
+function waterStatus(r) {
+  const ts = tempStatus(r);
+  if (ts?.danger) return { key: "warm", label: "Too warm", tone: "danger", color: "#d9534f", priority: 0 };
+  if (ts?.warn) return { key: "warm", label: "Warming", tone: "warn", color: "#e0922f", priority: 1 };
+  if (!r.siteCode) return { key: "weather", label: "Weather only", tone: "muted", color: "var(--muted)", priority: 5 };
+
+  const fc = classifyFlow(r);
+  if (fc?.label?.toLowerCase().includes("low")) return { key: "low", label: fc.label, tone: "warn", color: fc.color, priority: 2 };
+  if (fc?.label?.toLowerCase().includes("high")) return { key: "high", label: fc.label, tone: "info", color: fc.color, priority: 3 };
+  if (fc?.label === "Normal" || fc?.label === "In range") return { key: "ready", label: fc.label, tone: "good", color: fc.color, priority: 4 };
+  if (r.waterType === "still") return { key: "ready", label: r.lastElevationFt != null || r.lastWaterTempF != null ? "Has live data" : "Stillwater", tone: "good", color: "#3aa76d", priority: 4 };
+  return { key: "unknown", label: r.siteCode ? "Checking" : "Weather only", tone: "muted", color: "var(--muted)", priority: 6 };
+}
+
+function waterCardChips(r, status) {
+  const chips = [el("span", { class: `water-chip ${status.tone}`, text: status.label })];
+  const ts = tempStatus(r);
+  if (ts) chips.push(el("span", {
+    class: `water-chip ${ts.danger ? "danger" : ts.warn ? "warn" : "muted"}`,
+    text: ts.warn ? `${ts.temp} ${ts.short}` : `${ts.temp} water`,
+  }));
+  const m = conditionMatch(r);
+  if (m) chips.push(el("span", { class: "water-chip good", text: m.label }));
+  if (!r.siteCode) chips.push(el("span", { class: "water-chip muted", text: "No gauge" }));
+  return chips;
+}
+
+function smartWaterSections(waters) {
+  const buckets = {
+    ready:   { title: "Ready", color: "#3aa76d", items: [] },
+    warm:    { title: "Warm / caution", color: "#e0922f", items: [] },
+    low:     { title: "Low flow", color: "#c98a3a", items: [] },
+    high:    { title: "High flow", color: "#3a7bd5", items: [] },
+    weather: { title: "Weather only", color: "var(--muted)", items: [] },
+  };
+  for (const r of waters) {
+    const s = waterStatus(r);
+    if (buckets[s.key]) buckets[s.key].items.push({ r, status: s });
+  }
+  for (const b of Object.values(buckets)) {
+    b.items.sort((a, b) => {
+      const an = waterStats(a.r)?.lastDate || 0, bn = waterStats(b.r)?.lastDate || 0;
+      return bn - an || a.r.name.localeCompare(b.r.name);
+    });
+  }
+  return buckets;
+}
+
 function buildHeroCard(r) {
   const [c1, c2] = CARD_GRADIENTS[r.id % CARD_GRADIENTS.length];
   const isStill = r.waterType === "still";
@@ -1739,6 +1794,24 @@ function renderWatersSections() {
   host.append(sectionLabel("Your waters"));
   host.append(buildRiverHero(favs));
 
+  const boardWaters = favs.length ? favs : state.rivers.filter(matchesKind).slice(0, 12);
+  if (boardWaters.length) host.append(buildWatersBoard(boardWaters));
+
+  if (favs.length) {
+    const buckets = smartWaterSections(favs);
+    for (const key of ["ready", "warm", "low", "high", "weather"]) {
+      const b = buckets[key];
+      if (!b.items.length) continue;
+      const card = el("div", { class: "smart-section-card" });
+      card.append(el("div", { class: "smart-section-head" }, [
+        el("div", { class: "smart-section-title", style: `color:${b.color};`, text: b.title }),
+        el("div", { class: "smart-section-count", text: `${b.items.length}` }),
+      ]));
+      for (const item of b.items.slice(0, 4)) card.append(waterSmartRow(item.r, null, item.status));
+      host.append(card);
+    }
+  }
+
   const recent = recentWaters().filter(matchesKind);
   if (recent.length) {
     host.append(sectionLabel("Recently fished"));
@@ -1760,6 +1833,32 @@ function renderWatersSections() {
     }
     host.append(row);
   }
+}
+
+function buildWatersBoard(waters) {
+  const buckets = smartWaterSections(waters);
+  const counts = {
+    ready: buckets.ready.items.length,
+    warm: buckets.warm.items.length,
+    lowHigh: buckets.low.items.length + buckets.high.items.length,
+    weather: buckets.weather.items.length,
+  };
+  const firstName = (items) => items[0]?.r?.name || "";
+  const board = el("div", { class: "waters-board" });
+  const cards = [
+    ["Ready", counts.ready, firstName(buckets.ready.items), "#3aa76d"],
+    ["Warm", counts.warm, firstName(buckets.warm.items), "#e0922f"],
+    ["Off flow", counts.lowHigh, firstName([...buckets.low.items, ...buckets.high.items]), "#c98a3a"],
+    ["Weather only", counts.weather, firstName(buckets.weather.items), "var(--muted)"],
+  ];
+  for (const [k, v, s, color] of cards) {
+    board.append(el("div", { class: "water-status-card", style: `border-color:${color};` }, [
+      el("div", { class: "k", text: k }),
+      el("div", { class: "v", style: `color:${color};`, text: String(v) }),
+      el("div", { class: "s", text: s || "—" }),
+    ]));
+  }
+  return board;
 }
 
 function renderBrowseList() {
@@ -1817,7 +1916,68 @@ function emptyWaters(q) {
   return wrap;
 }
 
+function waterSmartRow(r, distanceMi = null, forcedStatus = null) {
+  const isStill = r.waterType === "still";
+  const trend = isStill ? null : flowTrend(r.lastCFS, r.prevCFS);
+  const hasReading = !!r.lastReadingAt || r.lastWaterTempF != null || (isStill ? r.lastElevationFt != null : r.lastCFS != null);
+  const status = forcedStatus || waterStatus(r);
+  const stats = waterStats(r);
+
+  const subBits = [el("span", { text: `${r.state}${r.section ? " · " + r.section : ""}` })];
+  if (distanceMi != null) subBits.push(el("span", { style: "color:var(--teal);", text: ` · ${distanceMi < 10 ? distanceMi.toFixed(1) : Math.round(distanceMi)} mi` }));
+  if (trend === "rising")  subBits.push(el("span", { class: "trend-rising",  text: " ↑ rising" }));
+  if (trend === "falling") subBits.push(el("span", { class: "trend-falling", text: " ↓ falling" }));
+
+  const condEls = [];
+  const fc = classifyFlow(r);
+  if (fc) condEls.push(el("span", { style: `color:${fc.color}; font-weight:700;`, text: fc.label }));
+  if (hasReading) condEls.push(freshnessDot(r));
+  const ts = tempStatus(r);
+  if (ts) condEls.push(el("span", {
+    style: ts.warn ? `color:${ts.color}; font-weight:700;` : "",
+    text: ts.warn ? `${ts.temp} ${ts.short}` : `${ts.temp} water`,
+  }));
+  const condLine = condEls.length
+    ? el("div", { style: "display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; margin-top:3px;" }, condEls)
+    : null;
+
+  const rightEl = el("div", { class: "river-right" }, [
+    el("button", {
+      class: "star", "aria-label": "Favorite",
+      html: icon(r.favorite ? ICONS.star : ICONS.starOutline, 18),
+      style: `color: ${r.favorite ? "var(--yellow)" : "var(--muted)"}`,
+      onclick: async (e) => {
+        e.stopPropagation();
+        r.favorite = !r.favorite;
+        await dbPut(state.db, "rivers", r);
+        await reload();
+        renderRivers();
+      },
+    }),
+    (isStill ? r.lastElevationFt != null : r.lastCFS != null) ? el("div", { class: "river-cfs" }, [
+      el("div", { class: "cfs-v", text: Math.round(isStill ? r.lastElevationFt : r.lastCFS).toString() }),
+      el("div", { class: "cfs-u", text: isStill ? "ft" : "cfs" }),
+    ]) : null,
+  ]);
+
+  return el("button", { class: "river-row smart", onclick: () => openRiver(r.id) }, [
+    el("div", { class: "status-stripe", style: `background:${status.color};` }),
+    el("div", { class: "river-main" }, [
+      el("div", { class: "drop", style: `background:${status.color};`, html: icon(isStill ? ICONS.map : ICONS.drop, 18) }),
+      el("div", { class: "meta" }, [
+        el("div", { class: "name", text: r.name }),
+        el("div", { class: "sub" }, subBits),
+        stats ? el("div", { class: "personal-context", text: personalLine(stats) }) : null,
+        el("div", { class: "water-chip-row" }, waterCardChips(r, status)),
+        condLine,
+      ]),
+      rightEl,
+    ]),
+  ]);
+}
+
 function riverRow(r, distanceMi = null) {
+  return waterSmartRow(r, distanceMi);
   const isStill = r.waterType === "still";
   const trend = isStill ? null : flowTrend(r.lastCFS, r.prevCFS);
   const hasReading = !!r.lastReadingAt || r.lastWaterTempF != null || (isStill ? r.lastElevationFt != null : r.lastCFS != null);

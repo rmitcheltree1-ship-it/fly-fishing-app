@@ -172,6 +172,122 @@
     .river-row .name { font-weight: 600; }
     .river-row .sub { color: var(--muted); font-size: 12px; }
     .river-row .star { background: transparent; border: 0; padding: 6px; }
+    .river-row.smart {
+      align-items: stretch;
+      padding: 0;
+      overflow: hidden;
+      background: var(--card);
+    }
+    .river-row.smart .status-stripe {
+      width: 5px;
+      align-self: stretch;
+      flex: 0 0 5px;
+      background: var(--teal);
+    }
+    .river-row.smart .river-main {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      flex: 1;
+      min-width: 0;
+    }
+    .water-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .water-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--bg-3);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .water-chip.good { background: rgba(58,167,109,0.15); color: #3aa76d; }
+    .water-chip.warn { background: rgba(224,146,47,0.16); color: #e0922f; }
+    .water-chip.danger { background: rgba(217,83,79,0.16); color: #d9534f; }
+    .water-chip.info { background: rgba(58,123,213,0.14); color: #3a7bd5; }
+    .water-chip.muted { background: var(--bg-3); color: var(--muted); }
+    .personal-context {
+      color: var(--teal);
+      font-size: 12px;
+      margin-top: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .waters-board {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .water-status-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 11px 12px;
+      text-align: left;
+      box-shadow: var(--shadow);
+    }
+    .water-status-card .k {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+    .water-status-card .v {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.1;
+      margin-top: 3px;
+      color: var(--fg);
+    }
+    .water-status-card .s {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .smart-section-card {
+      background: var(--bg-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    .smart-section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .smart-section-title {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .smart-section-count {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    @media (min-width: 720px) {
+      .waters-board { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .river-row.smart .river-main { padding: 14px 16px; }
+    }
 
     .metrics-grid {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
