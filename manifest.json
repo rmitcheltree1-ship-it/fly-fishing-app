@@ -1,14 +1,14 @@
 {
-  "name": "Fly Fishing",
-  "short_name": "FlyFish",
-  "description": "Western US rivers, live flow + weather, trip log with voice memos and fly references.",
+  "name": "Riffle — River Guide & Journal",
+  "short_name": "Riffle",
+  "description": "A modern guidebook and river journal for live conditions, trips, flies, and field notes.",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#0b1416",
-  "theme_color": "#0b1416",
+  "background_color": "#F7F2E9",
+  "theme_color": "#F7F2E9",
   "orientation": "portrait",
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
-    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }

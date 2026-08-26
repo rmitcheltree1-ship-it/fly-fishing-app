@@ -1,13 +1,13 @@
-# Fly Fishing — Web App
+# Riffle — River Guide & Journal
 
-A fly fishing app for the Western US (CO, MT, WY, ID, UT). It runs in any browser, installs to your iPhone home screen, and uses free live data from the U.S. Geological Survey (river flow + water temperature) and Open-Meteo (weather, wind, pressure, precipitation).
+Riffle is a modern river guidebook and fishing journal for the Western US (CO, MT, WY, ID, UT). It runs in any browser, installs to your phone home screen, and uses live data from the U.S. Geological Survey and Open-Meteo.
 
-No API keys, no accounts, no build step. Your data stays in your browser.
+There is no build step. IndexedDB remains the offline source of truth; optional Supabase accounts securely sync supported records between devices. Voice memos remain device-local.
 
 ## What's in the box
 
 ```
-Fly Fishing App/
+Riffle/
 ├── index.html       The app (HTML structure + styles)
 ├── app.js           All the logic — UI, IndexedDB, API calls, voice memos
 ├── manifest.json    PWA manifest so you can "Add to Home Screen"
@@ -33,7 +33,7 @@ Just double-click `index.html` and it opens in your default browser. Most things
 If you want it on your phone, you need to put the files on the internet so iOS can load them over HTTPS. The easiest, no-account option:
 
 1. Go to https://app.netlify.com/drop
-2. Drag the **Fly Fishing App** folder onto the page (just the top-level files, not the `FlyFishingApp/` iOS folder — but it'll work either way).
+2. Drag the **Riffle** project folder onto the page (just the top-level files, not the `FlyFishingApp/` iOS folder — but it'll work either way).
 3. Netlify gives you a URL like `https://random-name-123.netlify.app`.
 4. On your iPhone, open that URL in **Safari** (not Chrome — iOS only allows home-screen install from Safari).
 5. Tap the share button → **Add to Home Screen**. Done — it now launches like a real app.
@@ -67,7 +67,7 @@ The app will ask for:
 - **Location** — optional, only when you tap "Snapshot conditions" on a new trip. If denied, it uses the selected river's gauge coordinates instead.
 - **Microphone** — only when you tap Record on a voice memo.
 
-Nothing is sent anywhere except to USGS and Open-Meteo for the data you see. There's no backend.
+Conditions requests go to public river and weather providers. When you choose to sign in, supported journal records sync through Supabase under per-user row-level security. AI season summaries use an authenticated Supabase Edge Function.
 
 ## Data sources
 
@@ -78,7 +78,7 @@ Both have CORS enabled so the browser can call them directly.
 
 ## Where your data lives
 
-Everything (rivers, trips, voice memos, fly photos) is stored in your browser's IndexedDB on the device you're using. It survives reloads and offline use. It does **not** sync across devices — if you want that later, we'd need to add a small backend or a Dropbox/iCloud sync layer.
+Everything is stored first in IndexedDB and survives reloads and offline use. When signed in, waters, trips, flies, leaders, and gear sync through Supabase. Voice memos remain on the device where they were recorded.
 
 To wipe everything and re-seed, open your browser's DevTools → Application → IndexedDB → delete `flyfish-db`. Reload.
 

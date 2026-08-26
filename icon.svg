@@ -1,25 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Riffle river R monogram</title>
+  <desc id="desc">A cream R cut by a winding river on a deep navy topographic field.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0e2024"/>
-      <stop offset="100%" stop-color="#1d3037"/>
+    <linearGradient id="navy" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d3b56"/>
+      <stop offset="1" stop-color="#082a41"/>
     </linearGradient>
-    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#5be7e1"/>
-      <stop offset="100%" stop-color="#1f8a86"/>
-    </linearGradient>
+    <clipPath id="round"><rect width="512" height="512" rx="112"/></clipPath>
   </defs>
-  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
-  <!-- water ripples -->
-  <path d="M64 360 Q 128 330 192 360 T 320 360 T 448 360" stroke="#29b8b2" stroke-width="6" fill="none" opacity="0.45"/>
-  <path d="M64 400 Q 128 370 192 400 T 320 400 T 448 400" stroke="#29b8b2" stroke-width="6" fill="none" opacity="0.3"/>
-  <!-- big droplet -->
-  <path d="M256 80 C 360 200 380 280 380 320 a 124 124 0 1 1 -248 0 c 0 -40 20 -120 124 -240 z" fill="url(#drop)" />
-  <!-- highlight -->
-  <ellipse cx="216" cy="280" rx="22" ry="48" fill="#e7f3f5" opacity="0.35"/>
-  <!-- small fish -->
-  <g transform="translate(108 420)" fill="#e6b35a">
-    <path d="M0 0 Q 28 -18 56 0 Q 28 18 0 0 z"/>
-    <path d="M56 0 l 14 -10 l 0 20 z"/>
+  <g clip-path="url(#round)">
+    <rect width="512" height="512" fill="url(#navy)"/>
+    <g fill="none" stroke="#4d7890" stroke-width="3" opacity=".22">
+      <path d="M-50 92c92-60 145 18 238-25s172-21 250 24 126 20 150-7"/>
+      <path d="M-40 132c98-61 150 23 242-21s168-19 248 25 124 19 151-11"/>
+      <path d="M-58 373c88-45 144 27 226-12s147-29 230 12 143 20 180-14"/>
+      <path d="M-46 414c92-47 146 28 229-10s150-27 230 13 135 17 173-17"/>
+    </g>
+    <path d="M128 423V89h147c91 0 150 50 150 129 0 55-31 96-87 116l112 89h-119l-83-72v72zm104-246v96h36c36 0 58-18 58-49 0-30-22-47-58-47z" fill="#f8f1e6"/>
+    <path d="M171 117c73 40 91 89 55 139-35 49-30 91 17 126" fill="none" stroke="#0b334d" stroke-width="43" stroke-linecap="round"/>
+    <path d="M170 116c70 39 87 88 53 137-33 47-28 88 17 124" fill="none" stroke="#4e8798" stroke-width="8" stroke-linecap="round" opacity=".8"/>
   </g>
 </svg>
