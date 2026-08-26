@@ -36,6 +36,13 @@ test("a memory-only pending edit is dirty before IndexedDB persistence finishes"
   );
 });
 
+test("catch mutations participate in the same durable conflict protection", () => {
+  const durable = [{ store: "catches", rec: { uid: "c-1", tripUid: "t-1", deleted: false, updatedAt: 15 } }];
+  const dirty = collectDirtyUids("catches", durable, []);
+  assert.equal(dirty.has("c-1"), true);
+  assert.equal(mergeAction(durable[0].rec, { uid: "c-1", updatedAt: 50 }, dirty.has("c-1")), "push");
+});
+
 test("equal timestamps converge without another write", () => {
   assert.equal(mergeAction({ updatedAt: 10 }, { updatedAt: 10 }, false), "none");
 });

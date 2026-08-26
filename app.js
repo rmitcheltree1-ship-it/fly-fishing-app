@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.08.26-5";
+const APP_VERSION = "2026.08.26-6";
 
 // Riffle 0.5 security migration: older builds optionally stored a personal
 // Anthropic key in localStorage. AI requests now use the authenticated Edge
@@ -218,7 +218,7 @@ const SUPABASE_URL = "https://lauhleqlrzewxfdtxkyp.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdWhsZXFscnpld3hmZHR4a3lwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5OTgyOTQsImV4cCI6MjA5NTU3NDI5NH0.YH7mkcaab-iFTHFTz-z_0eRjEEFVe5kSx_UPsOax0M4";
 
 // Stores that mirror to the cloud. (memos + meta stay device-local.)
-const SYNCED_STORES = ["rivers", "trips", "flies", "leaders", "gear"];
+const SYNCED_STORES = ["rivers", "trips", "catches", "flies", "leaders", "gear"];
 const {
   collectDirtyUids,
   mergeAction: syncMergeAction,
@@ -312,8 +312,8 @@ function seedLeaderUid(l) { return `seed-l-${slug(l.name)}`; }
 // ---------- IndexedDB ----------
 
 const DB_NAME = "flyfish-db";
-const DB_VERSION = 3; // v3 adds a durable cloud-sync outbox
-const STORES = ["rivers", "trips", "memos", "flies", "leaders", "gear", "meta", "outbox"];
+const DB_VERSION = 4; // v4 adds catch-level logging
+const STORES = ["rivers", "trips", "catches", "memos", "flies", "leaders", "gear", "meta", "outbox"];
 
 function localDbName(userId) {
   return userId ? `${DB_NAME}-user-${userId}` : `${DB_NAME}-anonymous`;
@@ -363,7 +363,7 @@ async function importAnonymousDbIntoEmptyAccount(targetDb, userId) {
   const claimKey = `flyfish_anonymous_db_claimed:${userId}`;
   if (localStorage.getItem(claimKey)) return;
   const hasAccountData = (await Promise.all(
-    ["rivers", "trips", "memos", "flies", "leaders", "gear"].map(s => dbGetAll(targetDb, s))
+    ["rivers", "trips", "catches", "memos", "flies", "leaders", "gear"].map(s => dbGetAll(targetDb, s))
   )).some(rows => rows.length > 0);
   if (hasAccountData) return;
 
@@ -1108,6 +1108,7 @@ const state = {
   tab: "home",
   rivers: [],
   trips: [],
+  catches: [],
   flies: [],
   leaders: [],
   gear: [],
@@ -1129,6 +1130,7 @@ const state = {
 async function reload() {
   state.rivers = (await dbGetAll(state.db, "rivers")).filter(r => !r.deleted);
   state.trips = (await dbGetAll(state.db, "trips")).filter(t => !t.deleted).sort((a,b) => (b.date||0) - (a.date||0));
+  state.catches = (await dbGetAll(state.db, "catches")).filter(c => !c.deleted).sort((a,b) => (b.caughtAt||0) - (a.caughtAt||0));
   state.flies = (await dbGetAll(state.db, "flies")).filter(f => !f.deleted);
   state.leaders = (await dbGetAll(state.db, "leaders")).filter(l => !l.deleted);
   state.gear = (await dbGetAll(state.db, "gear")).filter(g => !g.deleted);
@@ -3477,11 +3479,85 @@ function renderPendingMemos(listEl, memos) {
 
 // ---------- trip detail (modal) ----------
 
+function catchCard(c, trip) {
+  const fly = state.flies.find(f => f.uid === c.flyUid);
+  const size = [c.lengthIn ? `${c.lengthIn} in` : null, c.weightLb ? `${c.weightLb} lb` : null].filter(Boolean).join(" · ");
+  return el("article", { class: "catch-card" }, [
+    c.photoDataUrl ? el("img", { class: "catch-photo", src: c.photoDataUrl, alt: c.species || "Catch photo" }) : el("div", { class: "catch-photo placeholder", html: icon(ICONS.fish, 24) }),
+    el("div", { class: "catch-copy" }, [
+      el("div", { class: "catch-time", text: new Date(c.caughtAt || trip.date).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) }),
+      el("h4", { text: c.species || "Fish" }),
+      el("div", { class: "catch-meta", text: [size, fly?.name].filter(Boolean).join(" · ") || "Catch logged" }),
+      c.notes ? el("p", { text: c.notes }) : null,
+    ]),
+    el("button", { class: "catch-delete", "aria-label": `Delete ${c.species || "catch"}`, html: icon(ICONS.trash, 17), onclick: async (e) => {
+      e.preventDefault();
+      if (!confirm("Delete this catch?")) return;
+      await softDelete("catches", c.id);
+      await reload();
+      closeModal();
+      openTrip(trip.id);
+    } }),
+  ]);
+}
+
+function newCatchModal(trip) {
+  const species = el("input", { type: "text", placeholder: "Rainbow trout", autocomplete: "off" });
+  const caughtAt = el("input", { type: "datetime-local", value: new Date(trip.date || Date.now()).toISOString().slice(0, 16) });
+  const fly = el("select", {}, [el("option", { value: "", text: "No fly selected" }), ...state.flies.filter(f => !f.retired).map(f => el("option", { value: f.uid, text: f.name }))]);
+  const length = el("input", { type: "number", min: "0", step: "0.25", placeholder: "inches", inputmode: "decimal" });
+  const weight = el("input", { type: "number", min: "0", step: "0.1", placeholder: "pounds", inputmode: "decimal" });
+  const notes = el("textarea", { rows: "3", placeholder: "Take, presentation, location, or anything worth remembering…" });
+  const photoInput = el("input", { type: "file", accept: "image/*", style: "display:none" });
+  const photoPreview = el("div", { class: "catch-photo-picker", text: "Add a photo" });
+  let photoDataUrl = null;
+  photoPreview.onclick = () => photoInput.click();
+  photoInput.onchange = async () => {
+    const file = photoInput.files?.[0];
+    if (!file) return;
+    try {
+      photoDataUrl = await downscalePhoto(file);
+      photoPreview.innerHTML = "";
+      photoPreview.append(el("img", { src: photoDataUrl, alt: "Catch preview" }));
+    } catch (_) { toast("Couldn't read that photo"); }
+  };
+  const body = el("div", {}, [
+    el("div", { class: "form-group" }, [el("label", { text: "Species" }), species]),
+    el("div", { class: "form-group" }, [el("label", { text: "Time caught" }), caughtAt]),
+    el("div", { class: "form-group" }, [el("label", { text: "Fly" }), fly]),
+    el("div", { class: "form-row" }, [
+      el("div", { class: "form-group" }, [el("label", { text: "Length" }), length]),
+      el("div", { class: "form-group" }, [el("label", { text: "Weight" }), weight]),
+    ]),
+    el("div", { class: "form-group" }, [el("label", { text: "Notes" }), notes]),
+    photoPreview, photoInput,
+  ]);
+  const save = el("button", { class: "btn", text: "Save catch", onclick: async (e) => {
+    e.preventDefault();
+    if (!species.value.trim()) { toast("Add the species"); species.focus(); return; }
+    const river = state.rivers.find(r => r.id === trip.riverId || r.uid === trip.riverUid);
+    await dbPut(state.db, "catches", {
+      tripUid: trip.uid, riverUid: trip.riverUid || river?.uid || null, flyUid: fly.value || null,
+      caughtAt: caughtAt.value ? new Date(caughtAt.value).getTime() : (trip.date || Date.now()),
+      species: species.value.trim(), lengthIn: length.value ? Number(length.value) : null,
+      weightLb: weight.value ? Number(weight.value) : null, photoDataUrl, notes: notes.value.trim(),
+    });
+    const catchCount = (await dbGetAll(state.db, "catches")).filter(c => !c.deleted && c.tripUid === trip.uid).length;
+    if ((trip.fishLanded || 0) < catchCount) await dbPut(state.db, "trips", { ...trip, fishLanded: catchCount });
+    await reload();
+    closeModal();
+    toast("Catch added");
+    openTrip(trip.id);
+  } });
+  openModal(modalShell("Log a catch", body, save));
+}
+
 async function openTrip(id) {
   const t = await dbGet(state.db, "trips", id);
   if (!t) return;
   const allMemos = await dbGetAll(state.db, "memos");
   const memos = allMemos.filter(m => m.tripId === id).sort((a,b) => b.createdAt - a.createdAt);
+  const catches = (await dbGetAll(state.db, "catches")).filter(c => !c.deleted && c.tripUid === t.uid).sort((a,b) => (a.caughtAt||0) - (b.caughtAt||0));
 
   const body = el("div");
 
@@ -3537,6 +3613,16 @@ async function openTrip(id) {
     rowKV("Fish landed", String(t.fishLanded || 0)),
     rowKV("Biggest", t.biggest ? `${t.biggest} in` : "—"),
   ]));
+
+  const catchSection = el("div", { class: "card catch-section" }, [
+    el("div", { class: "catch-section-head" }, [
+      el("div", {}, [el("h3", { text: "Catches" }), el("div", { class: "catch-count", text: `${catches.length} detailed` })]),
+      el("button", { class: "icon-btn", html: `${icon(ICONS.plus, 16)} <span>Add catch</span>`, onclick: (e) => { e.preventDefault(); closeModal(); newCatchModal(t); } }),
+    ]),
+  ]);
+  if (!catches.length) catchSection.append(el("div", { class: "catch-empty", text: "Add individual catches to remember species, flies, size, photos, and notes." }));
+  catches.forEach(c => catchSection.append(catchCard(c, t)));
+  body.append(catchSection);
 
   // Memos
   const memoCard = el("div", { class: "card" });
@@ -4500,6 +4586,11 @@ const FIELD_MAP = {
     memo_count: "memoCount", data_source: "dataSource",
     elevation_ft: "elevationFt", water_type: "waterType",
   },
+  catches: {
+    trip_uid: "tripUid", river_uid: "riverUid", fly_uid: "flyUid",
+    caught_at: "caughtAt", species: "species", length_in: "lengthIn",
+    weight_lb: "weightLb", photo_data_url: "photoDataUrl", notes: "notes",
+  },
   flies: {
     name: "name", type: "type", sizes: "sizes", color_variant: "colorVariant",
     imitates: "imitates", conditions: "conditions", notes: "notes",
@@ -4682,7 +4773,7 @@ async function fullSync() {
   try {
   // Sync each store independently so one failing table (e.g. a column that
   // hasn't been migrated yet in Supabase) doesn't block the others.
-  for (const store of ["rivers", "flies", "leaders", "gear", "trips"]) {
+  for (const store of ["rivers", "flies", "leaders", "gear", "trips", "catches"]) {
     try {
       await syncStore(store);
     } catch (err) {

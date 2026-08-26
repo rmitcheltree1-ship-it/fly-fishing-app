@@ -9,8 +9,8 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Riffle" />
   <link rel="manifest" href="manifest.json" />
-  <link rel="icon" href="icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="icon.png" />
+  <link rel="icon" href="riffle-icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="riffle-icon.png" />
   <title>Riffle — River Guide & Journal</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -542,6 +542,21 @@
     .home-trip-empty { align-items:center; }
     .home-trip-empty .home-trip-photo { min-height:76px; height:76px; }
     .home-suggestion { background:var(--card); border:1px solid var(--line); border-left:3px solid var(--gold); border-radius:12px; padding:12px 14px; }
+    .catch-section-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:10px; }
+    .catch-section-head h3 { margin-bottom:1px; }
+    .catch-count { color:var(--muted); font-size:11px; }
+    .catch-card { display:flex; align-items:flex-start; gap:11px; padding:11px 0; border-top:1px solid var(--line); position:relative; }
+    .catch-photo { width:72px; height:72px; object-fit:cover; border-radius:11px; border:1px solid var(--line); flex:none; }
+    .catch-photo.placeholder { display:flex; align-items:center; justify-content:center; color:var(--teal); background:linear-gradient(145deg, rgba(101,125,91,.2), rgba(21,84,107,.12)); }
+    .catch-copy { flex:1; min-width:0; }
+    .catch-time { color:var(--muted); font-size:10px; }
+    .catch-copy h4 { margin:2px 0; font-size:15px; }
+    .catch-meta { color:var(--teal); font-size:11px; font-weight:700; }
+    .catch-copy p { color:var(--muted); font-size:12px; margin:5px 0 0; }
+    .catch-delete { width:36px; min-height:36px; border:0; border-radius:9px; background:transparent; color:var(--red); padding:7px; }
+    .catch-empty { color:var(--muted); font-size:12px; padding:12px 0 2px; border-top:1px solid var(--line); }
+    .catch-photo-picker { min-height:112px; border:1px dashed var(--line); border-radius:12px; background:var(--card); display:flex; align-items:center; justify-content:center; color:var(--teal); font-size:13px; font-weight:700; cursor:pointer; overflow:hidden; }
+    .catch-photo-picker img { width:100%; height:180px; object-fit:cover; }
     @media (min-width: 760px) {
       body { padding-bottom:88px; }
       nav.tabs { left:50%; right:auto; transform:translateX(-50%); bottom:16px; width:min(620px, calc(100% - 32px)); border:1px solid var(--line); border-radius:20px; padding:7px; box-shadow:var(--shadow); }
@@ -672,7 +687,7 @@
 
 <header class="appbar">
   <div class="title-cluster">
-    <img class="brand-mark" src="icon.svg" alt="" />
+    <img class="brand-mark" src="riffle-icon.svg" alt="" />
     <div>
       <h1 id="page-title">Riffle</h1>
       <div class="sub" id="page-sub">River guide & journal</div>

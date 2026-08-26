@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Riffle river R monogram</title>
+  <desc id="desc">A cream R cut by a winding river on a deep navy topographic field.</desc>
+  <defs>
+    <linearGradient id="navy" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d3b56"/><stop offset="1" stop-color="#082a41"/></linearGradient>
+    <clipPath id="round"><rect width="512" height="512" rx="112"/></clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="512" height="512" fill="url(#navy)"/>
+    <g fill="none" stroke="#4d7890" stroke-width="3" opacity=".22">
+      <path d="M-50 92c92-60 145 18 238-25s172-21 250 24 126 20 150-7"/><path d="M-40 132c98-61 150 23 242-21s168-19 248 25 124 19 151-11"/>
+      <path d="M-58 373c88-45 144 27 226-12s147-29 230 12 143 20 180-14"/><path d="M-46 414c92-47 146 28 229-10s150-27 230 13 135 17 173-17"/>
+    </g>
+    <path d="M128 423V89h147c91 0 150 50 150 129 0 55-31 96-87 116l112 89h-119l-83-72v72zm104-246v96h36c36 0 58-18 58-49 0-30-22-47-58-47z" fill="#f8f1e6"/>
+    <path d="M171 117c73 40 91 89 55 139-35 49-30 91 17 126" fill="none" stroke="#0b334d" stroke-width="43" stroke-linecap="round"/>
+    <path d="M170 116c70 39 87 88 53 137-33 47-28 88 17 124" fill="none" stroke="#4e8798" stroke-width="8" stroke-linecap="round" opacity=".8"/>
+  </g>
+</svg>

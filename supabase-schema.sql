@@ -81,6 +81,24 @@ alter table trips add column if not exists elevation_ft double precision;
 alter table trips add column if not exists water_type   text;
 alter table trips add column if not exists photos       text;
 
+-- ───────────────────────── CATCHES ─────────────────────────
+create table if not exists catches (
+  id             text,
+  user_id        uuid not null references auth.users(id) on delete cascade,
+  trip_uid       text,
+  river_uid      text,
+  fly_uid        text,
+  caught_at      bigint,
+  species        text,
+  length_in      double precision,
+  weight_lb      double precision,
+  photo_data_url text,
+  notes          text,
+  updated_at     timestamptz default now(),
+  deleted        boolean default false,
+  primary key (user_id, id)
+);
+
 -- ───────────────────────── FLIES ──────────────────────────
 create table if not exists flies (
   id             text,
@@ -162,7 +180,7 @@ declare
   pk_name text;
   pk_definition text;
 begin
-  foreach table_name in array array['rivers', 'trips', 'flies', 'leaders', 'gear']
+  foreach table_name in array array['rivers', 'trips', 'catches', 'flies', 'leaders', 'gear']
   loop
     pk_name := null;
     pk_definition := null;
@@ -190,18 +208,21 @@ end $$;
 -- ───────────── Row Level Security: you only ever see your own data ─────────────
 alter table rivers  enable row level security;
 alter table trips   enable row level security;
+alter table catches enable row level security;
 alter table flies   enable row level security;
 alter table leaders enable row level security;
 alter table gear    enable row level security;
 
 drop policy if exists "own rivers"  on rivers;
 drop policy if exists "own trips"   on trips;
+drop policy if exists "own catches" on catches;
 drop policy if exists "own flies"   on flies;
 drop policy if exists "own leaders" on leaders;
 drop policy if exists "own gear"    on gear;
 
 create policy "own rivers"  on rivers  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own trips"   on trips   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "own catches" on catches for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own flies"   on flies   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own leaders" on leaders for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "own gear"    on gear    for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
