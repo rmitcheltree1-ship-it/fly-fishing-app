@@ -7,5 +7,13 @@ Thumbs.db
 *.suo
 *.user
 
+# Local secrets and machine-specific settings
+.env
+.env.*
+!.env.example
+recovery-codes.txt
+.claude/settings.local.json
+.codex-backup/
+
 # Old iOS project — not needed for the web app
 FlyFishingApp/

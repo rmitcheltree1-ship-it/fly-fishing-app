@@ -8,7 +8,12 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.07.20-1";
+const APP_VERSION = "2026.08.26-1";
+
+// Riffle 0.5 security migration: older builds optionally stored a personal
+// Anthropic key in localStorage. AI requests now use the authenticated Edge
+// Function exclusively, so remove any legacy browser-held credential.
+localStorage.removeItem("flyfish_anthropic_key");
 
 // ---------- themes ----------
 // Each theme is a full set of the CSS variables declared in index.html's :root.
@@ -244,6 +249,11 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 // Stores that mirror to the cloud. (memos + meta stay device-local.)
 const SYNCED_STORES = ["rivers", "trips", "flies", "leaders", "gear"];
+const {
+  collectDirtyUids,
+  mergeAction: syncMergeAction,
+  sameMutation: sameSyncMutation,
+} = window.RiffleSyncCore;
 
 // Gear categories tracked per the user's setup (rods, waders, boots).
 const GEAR_TYPES = ["Rod", "Waders", "Boots", "Other"];
@@ -4030,7 +4040,6 @@ function renderReports() {
   // ── Section 3: Claude AI season summary ────────────────────────────────
   const aiCard = el("div", { class: "card" });
   const aiTitle = el("h3", { text: "AI Season Summary" });
-  const apiKeyStored = localStorage.getItem("flyfish_anthropic_key") || "";
   let summaryEl = el("div");
   const regenerateBtn = el("button", { class: "btn secondary", style: "margin-top:10px; display:none;", text: "Regenerate" });
 
@@ -4079,50 +4088,20 @@ function renderReports() {
     return data.text || "No response received.";
   };
 
-  // Fallback: direct browser call with a personal key stored on this device.
-  const callDirect = async (key) => {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": key,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        system: "You are a fly fishing coach analyzing an angler's personal trip log. Be specific, reference actual numbers, and give 1-2 actionable observations. Keep it to 4-5 sentences.",
-        messages: [{ role: "user", content: `Here is my season data: ${JSON.stringify(buildSummaryPayload())}` }],
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
-    return data?.content?.[0]?.text || "No response received.";
-  };
-
   const runGenerate = async () => {
     summaryEl.innerHTML = "";
     summaryEl.append(el("div", { style: "color:var(--muted); font-size:13px; margin-top:8px;", text: "Analyzing your season…" }));
     regenerateBtn.style.display = "none";
     try {
-      let text;
-      try {
-        text = await callEdgeFunction();
-      } catch (e) {
-        if (e.code === "no-session" || e.code === "not-deployed") {
-          const k = localStorage.getItem("flyfish_anthropic_key");
-          if (!k) {
-            throw new Error(e.code === "no-session"
-              ? "Sign in (account button, top right) to use AI summaries — or add a personal API key below."
-              : "AI service not set up yet — deploy the ai-summary Edge Function, or add a personal API key below.");
-          }
-          text = await callDirect(k);
-        } else { throw e; }
-      }
+      const text = await callEdgeFunction().catch(e => {
+        if (e.code === "no-session") {
+          throw new Error("Sign in using the account button to generate an AI summary.");
+        }
+        if (e.code === "not-deployed") {
+          throw new Error("The AI summary service is not available yet.");
+        }
+        throw e;
+      });
       summaryEl.innerHTML = "";
       summaryEl.append(el("div", { style: "font-size:13px; line-height:1.6; color:var(--fg); margin-top:8px; white-space:pre-wrap;", text: text }));
       regenerateBtn.style.display = "";
@@ -4141,26 +4120,6 @@ function renderReports() {
     el("div", { style: "color:var(--muted); font-size:12px; margin-top:4px;", text: "Signed in? Summaries run through the app's AI service — no setup needed." }),
     generateBtn, summaryEl, regenerateBtn);
 
-  // Optional personal-key fallback for devices that aren't signed in.
-  if (!apiKeyStored) {
-    const keyInput = el("input", { type: "password", placeholder: "sk-ant-… (optional fallback)", style: "flex:1; min-width:0;" });
-    aiCard.append(el("div", { class: "form-group", style: "margin-top:12px; margin-bottom:0;" }, [
-      el("label", { text: "Personal API key (optional — stored on this device only)" }),
-      el("div", { style: "display:flex; gap:8px;" }, [
-        keyInput,
-        el("button", { class: "btn secondary", style: "flex-shrink:0; margin:0;", text: "Save",
-          onclick: (e) => {
-            e.preventDefault();
-            const k = keyInput.value.trim();
-            if (!k.startsWith("sk-")) { toast("Enter a valid Anthropic API key (sk-ant-…)"); return; }
-            localStorage.setItem("flyfish_anthropic_key", k);
-            toast("Key saved on this device");
-            renderReports();
-          },
-        }),
-      ]),
-    ]));
-  }
   panel.append(aiCard);
 }
 
@@ -4659,7 +4618,10 @@ function pushRecord(store, rec) {
 async function flushPush() {
   if (!currentUser || !supaClient || !state.db) return;
   const durable = await dbGetAll(state.db, "outbox");
-  for (const item of durable) pendingPush.set(item.id, { store: item.store, rec: item.rec });
+  // Memory may contain an edit newer than the durable snapshot we just read.
+  for (const item of durable) {
+    if (!pendingPush.has(item.id)) pendingPush.set(item.id, { store: item.store, rec: item.rec });
+  }
   if (!pendingPush.size) return;
   const items = [...pendingPush.entries()];
   const byStore = {};
@@ -4675,9 +4637,15 @@ async function flushPush() {
         ok = false;
         console.warn("push failed", store, error);
       } else {
-        for (const { key } of entries) {
-          pendingPush.delete(key);
-          await dbDelete(state.db, "outbox", key);
+        for (const { key, row } of entries) {
+          const sent = fromRemote(store, row);
+          const current = await dbGet(state.db, "outbox", key);
+          // Do not acknowledge a newer edit made while this request was in flight.
+          if (!current || sameSyncMutation(current.rec, sent)) {
+            const queued = pendingPush.get(key);
+            if (!queued || sameSyncMutation(queued.rec, sent)) pendingPush.delete(key);
+            if (current) await dbDelete(state.db, "outbox", key);
+          }
         }
       }
     } catch (e) { ok = false; console.warn("push error", store, e); }
@@ -4704,6 +4672,10 @@ async function syncStore(store) {
   if (error) throw error;
 
   const local = await dbGetAll(state.db, store);
+  const durableOutbox = await dbGetAll(state.db, "outbox");
+  // pushRecord updates memory before its IndexedDB write completes. Include both
+  // sources so a pull cannot overwrite an edit in that persistence window.
+  const dirtyUids = collectDirtyUids(store, durableOutbox, pendingPush.entries());
   const localByUid = new Map(local.filter(r => r.uid).map(r => [r.uid, r]));
   const remoteByUid = new Map((rows || []).map(r => [r.id, r]));
 
@@ -4711,9 +4683,10 @@ async function syncStore(store) {
   for (const row of (rows || [])) {
     const rem = fromRemote(store, row);
     const loc = localByUid.get(rem.uid);
+    const action = syncMergeAction(loc, rem, dirtyUids.has(rem.uid));
     if (!loc) {
       await dbPut(state.db, store, { ...rem, _fromSync: true });
-    } else if ((rem.updatedAt || 0) > (loc.updatedAt || 0)) {
+    } else if (action === "pull") {
       await dbPut(state.db, store, { ...loc, ...rem, id: loc.id, _fromSync: true });
     }
   }
@@ -4724,7 +4697,9 @@ async function syncStore(store) {
     if (!loc.uid) continue;
     const row = remoteByUid.get(loc.uid);
     const remoteTs = row?.updated_at ? Date.parse(row.updated_at) : 0;
-    if (!row || (loc.updatedAt || 0) > remoteTs) toPush.push(toRemote(store, loc, userId));
+    if (!row || syncMergeAction(loc, { updatedAt: remoteTs }, dirtyUids.has(loc.uid)) === "push") {
+      toPush.push(toRemote(store, loc, userId));
+    }
   }
   if (toPush.length) {
     const { error: upErr } = await supaClient.from(store).upsert(toPush, { onConflict: "user_id,id" });
@@ -4750,6 +4725,7 @@ async function fullSync() {
   syncing = true;
   setSyncStatus("syncing");
   let ok = true;
+  try {
   // Sync each store independently so one failing table (e.g. a column that
   // hasn't been migrated yet in Supabase) doesn't block the others.
   for (const store of ["rivers", "flies", "leaders", "gear", "trips"]) {
@@ -4772,10 +4748,12 @@ async function fullSync() {
     setSyncStatus("error");
     toast("Sync failed — your data is safe on this device");
   }
-  syncing = false;
-  flushPush();
-  loadRemoteTheme(); // adopt a theme picked on another device (fire-and-forget)
-  return ok;
+    return ok;
+  } finally {
+    syncing = false;
+    flushPush();
+    loadRemoteTheme(); // adopt a theme picked on another device (fire-and-forget)
+  }
 }
 
 function rerenderCurrent() {
@@ -5050,6 +5028,9 @@ async function initAuth() {
   // Re-sync when the app comes back to the foreground.
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && currentUser) fullSync();
+  });
+  window.addEventListener("online", () => {
+    if (currentUser) fullSync();
   });
 }
 
