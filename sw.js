@@ -1,7 +1,7 @@
 // Offline cache for the versioned app shell. Live conditions stay network-first
 // so an old cached response is never presented as a current river reading.
 // Bump VERSION on every release, in lockstep with APP_VERSION in app.js.
-const VERSION = "2026.08.26-4";
+const VERSION = "2026.08.26-5";
 const CACHE = "riffle-" + VERSION;
 const SHELL = ["./", "./index.html", "./sync-core.js", "./app.js", "./manifest.json", "./icon.svg", "./icon.png"];
 

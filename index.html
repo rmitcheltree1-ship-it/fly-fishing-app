@@ -555,6 +555,16 @@
       .home-feature-card { padding:20px; }
       .home-trip-photo { width:150px; min-height:112px; }
     }
+    @media (min-width: 960px) {
+      .home-journal { max-width:1040px; display:grid; grid-template-columns:minmax(0, 1.12fr) minmax(0, .88fr); gap:16px; align-items:stretch; }
+      .home-welcome, .home-suggestion { grid-column:1 / -1; }
+      .home-feature-card { margin:0; min-height:250px; }
+      .current-conditions { display:flex; flex-direction:column; }
+      .current-conditions .home-spark { margin-top:auto; }
+      .recent-trip .home-trip-button { min-height:172px; }
+      .recent-trip .home-trip-photo { width:170px; min-height:172px; }
+      .home-suggestion { margin-top:0; }
+    }
 
     .leaflet-popup-content { color: #111; }
 

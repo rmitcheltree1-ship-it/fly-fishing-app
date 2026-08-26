@@ -8,7 +8,7 @@
 
 // Bump on every release, together with CACHE in sw.js (kept in lockstep so the
 // version shown in the account sheet always matches the cached shell).
-const APP_VERSION = "2026.08.26-4";
+const APP_VERSION = "2026.08.26-5";
 
 // Riffle 0.5 security migration: older builds optionally stored a personal
 // Anthropic key in localStorage. AI requests now use the authenticated Edge
@@ -1310,7 +1310,7 @@ function homeGreeting() {
 
 function homeDisplayName() {
   const meta = currentUser?.user_metadata || {};
-  const raw = meta.full_name || meta.name || currentUser?.email?.split("@")[0] || "Angler";
+  const raw = meta.display_name || meta.full_name || meta.name || localStorage.getItem("riffle_display_name") || currentUser?.email?.split("@")[0] || "Angler";
   const first = String(raw).trim().split(/[\s._-]+/)[0] || "Angler";
   return first.charAt(0).toUpperCase() + first.slice(1);
 }
@@ -4794,12 +4794,49 @@ function updateAccountButton() {
   const glyph = btn.querySelector(".acct-glyph");
   if (currentUser) {
     btn.classList.add("signed-in");
-    const email = currentUser.email || "";
-    if (glyph) glyph.textContent = (email[0] || "•").toUpperCase();
+    if (glyph) glyph.textContent = (homeDisplayName()[0] || "•").toUpperCase();
   } else {
     btn.classList.remove("signed-in");
     if (glyph) glyph.textContent = "○";
   }
+}
+
+function preferredNameSection() {
+  const input = el("input", {
+    type: "text", maxlength: "40", autocomplete: "name",
+    placeholder: "How Riffle should greet you",
+    value: homeDisplayName() === "Angler" ? "" : homeDisplayName(),
+  });
+  const save = el("button", { class: "btn secondary", style: "margin-top:8px;", text: "Save preferred name" });
+  save.onclick = async (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) { toast("Enter the name you'd like Riffle to use"); return; }
+    save.disabled = true;
+    try {
+      localStorage.setItem("riffle_display_name", name);
+      if (currentUser && supaClient) {
+        const { data, error } = await supaClient.auth.updateUser({ data: { display_name: name } });
+        if (error) throw error;
+        if (data?.user) currentUser = data.user;
+      }
+      updateAccountButton();
+      if (appReady && state.tab === "home") renderHome();
+      toast("Preferred name saved");
+    } catch (err) {
+      console.error("Could not save preferred name", err);
+      toast("Name saved on this device; cloud update failed");
+    } finally {
+      save.disabled = false;
+    }
+  };
+  return el("section", { class: "card", style: "margin-top:12px;" }, [
+    el("h3", { text: "Your journal" }),
+    el("div", { class: "form-group", style: "margin:0;" }, [
+      el("label", { text: "Preferred name" }), input,
+    ]),
+    save,
+  ]);
 }
 
 function fmtLastSynced() {
@@ -4848,6 +4885,7 @@ function openAccountSheet() {
         closeModal();
       },
     }));
+    body.append(preferredNameSection());
     body.append(appearanceSection());
     openModal(modalShell("Account", body));
     return;
@@ -4926,6 +4964,7 @@ function openAccountSheet() {
   };
 
   body.append(signInBtn, signUpBtn);
+  body.append(preferredNameSection());
   body.append(appearanceSection());
   body.append(el("div", { style: "color:var(--muted); font-size:11px; text-align:center; margin-top:14px;", text: `Version ${APP_VERSION}` }));
   openModal(modalShell("Account", body));
